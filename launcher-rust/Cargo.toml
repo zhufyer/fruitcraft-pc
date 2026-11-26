@@ -1,0 +1,9 @@
+[package]
+name = "fruitcraft-launcher"
+version = "0.1.4"
+edition = "2021"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
