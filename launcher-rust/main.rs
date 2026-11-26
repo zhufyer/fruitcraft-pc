@@ -1,5 +1,5 @@
 // ============================================================
-//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.06b, Rust)
+//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.07b, Rust)
 //  Zero dependencies (raw Win32 FFI), built for x86_64-pc-windows-gnu.
 //
 //  * strips the "Mark of the Web" (Zone.Identifier ADS) from
@@ -356,27 +356,6 @@ fn strip_motw(path: &Path, root: &Path) {
     );
 }
 
-// Delete a file, a junction (reparse point), or a real directory tree.
-fn delete_entry(path: &Path) {
-    let a = unsafe { GetFileAttributesW(wide(&path.to_string_lossy()).as_ptr()) };
-    if a == INVALID_FILE_ATTRIBUTES {
-        return;
-    }
-    let is_dir = a & FILE_ATTRIBUTE_DIRECTORY != 0;
-    let is_reparse = a & FILE_ATTRIBUTE_REPARSE_POINT != 0;
-    if is_dir && !is_reparse {
-        if let Ok(rd) = fs::read_dir(path) {
-            for e in rd.flatten() {
-                delete_entry(&e.path());
-            }
-        }
-        let _ = unsafe { RemoveDirectoryW(wide(&path.to_string_lossy()).as_ptr()) };
-    } else {
-        // files and junctions: DeleteFileW removes the junction itself, not the target
-        let _ = unsafe { DeleteFileW(wide(&path.to_string_lossy()).as_ptr()) };
-    }
-}
-
 fn count_files(dir: &Path) -> u32 {
     let mut n = 0u32;
     if let Ok(rd) = fs::read_dir(dir) {
@@ -407,6 +386,26 @@ fn count_lu(dir: &Path) -> u32 {
     n
 }
 
+// Non-destructive file sync: a file is copied only when the destination
+// is missing or its size differs. Identical files are left alone, and
+// NOTHING is ever deleted. Also refuses to touch a file that is the
+// source itself (data dir == app root case).
+fn sync_file(src: &Path, dst: &Path) {
+    let same = match (fs::canonicalize(src), fs::canonicalize(dst)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    };
+    if same {
+        return;
+    }
+    if let (Ok(s), Ok(m)) = (src.metadata(), dst.metadata()) {
+        if s.len() == m.len() {
+            return; // already in sync
+        }
+    }
+    let _ = fs::copy(src, dst);
+}
+
 fn copy_tree(src: &Path, dst: &Path) {
     let _ = fs::create_dir_all(dst);
     if let Ok(rd) = fs::read_dir(src) {
@@ -421,19 +420,12 @@ fn copy_tree(src: &Path, dst: &Path) {
             if ft.is_dir() {
                 copy_tree(&p, &d);
             } else if ft.is_file() {
-                let same = match (fs::canonicalize(&p), fs::canonicalize(&d)) {
-                    (Ok(a), Ok(b)) => a == b,
-                    _ => false,
-                };
-                if !same {
-                    if fs::copy(&p, &d).is_ok() {
-                        let done = COPY_DONE.fetch_add(1, Ordering::SeqCst) + 1;
-                        let total = COPY_TOTAL.load(Ordering::SeqCst).max(1);
-                        PCT.store((done * 100) / total as i32, Ordering::SeqCst);
-                        if done % 64 == 0 {
-                            set_status(PREP);
-                        }
-                    }
+                sync_file(&p, &d);
+                let done = COPY_DONE.fetch_add(1, Ordering::SeqCst) + 1;
+                let total = COPY_TOTAL.load(Ordering::SeqCst).max(1);
+                PCT.store((done * 100) / total as i32, Ordering::SeqCst);
+                if done % 64 == 0 {
+                    set_status(PREP);
                 }
             }
         }
@@ -514,7 +506,7 @@ fn main() {
     };
     log_line(
         &format!(
-            "Fruitcraft launcher v0.1.06b (rust) starting; root={}",
+            "Fruitcraft launcher v0.1.07b (rust) starting; root={}",
             root.display()
         ),
         &root,
@@ -535,122 +527,154 @@ fn main() {
         }
     }
 
-    // ---- 2) find + validate the data folder ----
+    // ---- 2) determine the runtime layout (NON-DESTRUCTIVE) ----
+    // (a) If the app root already holds the whole game (flat layout from a
+    //     previous run), no sync is needed at all - the user may safely
+    //     delete the data/ folder after the first run.
+    let root_lu = count_lu(&root);
+    let root_complete = root.join("main.lua").is_file()
+        && root.join("main.lu").is_file()
+        && root_lu >= 100;
+    log_line(
+        &format!(
+            "root runtime check: main.lua={} main.lu={} root .lu count={} (complete={})",
+            root.join("main.lua").is_file(),
+            root.join("main.lu").is_file(),
+            root_lu,
+            root_complete
+        ),
+        &root,
+    );
+
     let mut data_dir: Option<PathBuf> = None;
-    let mut cands: Vec<PathBuf> = vec![root.join("data")];
-    if let Some(par) = root.parent() {
-        cands.push(par.join("data"));
-    }
-    for cand in &cands {
-        if cand.is_dir() {
-            if let Some(d) = resolve_data_dir(cand) {
-                data_dir = Some(d);
-                break;
-            }
+    let mut sync_needed = false;
+
+    if !root_complete {
+        let mut cands: Vec<PathBuf> = vec![root.join("data")];
+        if let Some(par) = root.parent() {
+            cands.push(par.join("data"));
         }
-    }
-    if data_dir.is_none() {
-        let choice = unsafe {
-            MessageBoxW(
-                std::ptr::null_mut(),
-                wide(
-                    "Game data was not found next to the launcher.\n\nOK: choose the data folder manually\nCancel: exit",
-                )
-                .as_ptr(),
-                wide("Fruitcraft").as_ptr(),
-                MB_ICONQUESTION | MB_OKCANCEL,
-            )
-        };
-        if choice == IDOK {
-            if let Some(picked) = browse_for_folder() {
-                if let Some(d) = resolve_data_dir(&picked) {
+        for cand in &cands {
+            if cand.is_dir() {
+                if let Some(d) = resolve_data_dir(cand) {
                     data_dir = Some(d);
-                    let target = root.join("data");
-                    if !target.exists() {
-                        let cmd = format!(
-                            "cmd.exe /c mklink /J \"{}\" \"{}\" >NUL 2>&1",
-                            target.to_string_lossy(),
-                            picked.to_string_lossy()
-                        );
-                        log_line(&format!("remember data via junction: {}", cmd), &root);
-                        let cmd_w = wide(&cmd);
-                        let cwd_w = wide(&root.to_string_lossy());
-                        unsafe {
-                            CreateProcessW(
-                                cmd_w.as_ptr(),
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                                std::ptr::null_mut(),
-                                0,
-                                CREATE_NO_WINDOW,
-                                std::ptr::null_mut(),
-                                cwd_w.as_ptr(),
-                                std::ptr::null(),
-                                std::ptr::null_mut(),
-                            );
-                        }
-                    }
-                } else {
-                    msgbox(
-                        "That folder does not look like game data (main.lua / main.lu is missing).",
-                        "Fruitcraft",
-                        MB_ICONERROR,
-                    );
-                    return;
+                    sync_needed = true;
+                    break;
                 }
             }
         }
         if data_dir.is_none() {
-            return;
+            let choice = unsafe {
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    wide(
+                        "Game data was not found next to the launcher.\n\nOK: choose the data folder manually\nCancel: exit",
+                    )
+                    .as_ptr(),
+                    wide("Fruitcraft").as_ptr(),
+                    MB_ICONQUESTION | MB_OKCANCEL,
+                )
+            };
+            if choice == IDOK {
+                if let Some(picked) = browse_for_folder() {
+                    if let Some(d) = resolve_data_dir(&picked) {
+                        data_dir = Some(d);
+                        sync_needed = true;
+                        // Remember the location via junction - but NEVER
+                        // point the junction back into the app root itself
+                        // (that is what wiped game files in v0.1.05b).
+                        let target = root.join("data");
+                        let related = picked.starts_with(&root) || root.starts_with(&picked);
+                        if !target.exists() && !related {
+                            let cmd = format!(
+                                "cmd.exe /c mklink /J \"{}\" \"{}\" >NUL 2>&1",
+                                target.to_string_lossy(),
+                                picked.to_string_lossy()
+                            );
+                            log_line(&format!("remember data via junction: {}", cmd), &root);
+                            let cmd_w = wide(&cmd);
+                            let cwd_w = wide(&root.to_string_lossy());
+                            unsafe {
+                                CreateProcessW(
+                                    cmd_w.as_ptr(),
+                                    std::ptr::null_mut(),
+                                    std::ptr::null_mut(),
+                                    std::ptr::null_mut(),
+                                    0,
+                                    CREATE_NO_WINDOW,
+                                    std::ptr::null_mut(),
+                                    cwd_w.as_ptr(),
+                                    std::ptr::null(),
+                                    std::ptr::null_mut(),
+                                );
+                            }
+                        }
+                    } else {
+                        msgbox(
+                            "That folder does not look like game data (main.lua / main.lu is missing).",
+                            "Fruitcraft",
+                            MB_ICONERROR,
+                        );
+                        return;
+                    }
+                }
+            }
+            if data_dir.is_none() {
+                return;
+            }
+        }
+        if let Some(ref dd) = data_dir {
+            log_line(&format!("data dir = {}", dd.display()), &root);
         }
     }
-    let data_dir = data_dir.unwrap();
-    log_line(&format!("data dir = {}", data_dir.display()), &root);
 
-    // ---- 3) integrity check: original bytecode modules ----
-    let lu = count_lu(&data_dir);
+    // ---- 3) integrity gate: original bytecode must be present, or we stop ----
+    let (lu, where_lu) = match &data_dir {
+        Some(dd) => (count_lu(dd), format!("data dir ({})", dd.display())),
+        None => (root_lu, "app root".to_string()),
+    };
     log_line(
-        &format!("bytecode modules (.lu) in data: {} (expected 363)", lu),
+        &format!("bytecode modules (.lu) in {}: {} (expected 363)", where_lu, lu),
         &root,
     );
     if lu < 100 {
         msgbox(
-            "Game data looks incomplete (too few .lu modules).\nRe-extract the release zip and try again.",
+            "Game data is incomplete - the original bytecode modules (.lu) cannot be found.\n\nPlease extract the release zip into a FRESH folder and run Fruitcraft.exe from there.\n\n(If you removed the game files from this folder, they cannot be restored - use the zip again.)",
             "Fruitcraft",
-            MB_ICONWARNING,
+            MB_ICONERROR,
         );
+        return;
     }
 
-    // ---- 4) prepare the app root: clean stale, then copy real files ----
-    set_status(PREP);
-    let total = count_files(&data_dir) as i32;
-    COPY_TOTAL.store(total, Ordering::SeqCst);
-    COPY_DONE.store(0, Ordering::SeqCst);
-    PCT.store(0, Ordering::SeqCst);
-
-    if let Ok(rd) = fs::read_dir(&data_dir) {
-        for e in rd.flatten() {
-            let name = e.file_name();
-            let ns = name.to_string_lossy().to_string();
-            if ns.eq_ignore_ascii_case("data") {
-                continue; // never touch the source folder itself
-            }
-            let target = root.join(&name);
-            if target.exists() || target.symlink_metadata().is_ok() {
-                log_line(&format!("clean stale root entry: {}", ns), &root);
-                delete_entry(&target);
-            }
+    // ---- 4) sync data into the app root (merge: copy missing/changed files, delete nothing) ----
+    if sync_needed {
+        set_status(PREP);
+        let dd = data_dir.as_ref().unwrap();
+        let total = count_files(dd) as i32;
+        COPY_TOTAL.store(total, Ordering::SeqCst);
+        COPY_DONE.store(0, Ordering::SeqCst);
+        PCT.store(0, Ordering::SeqCst);
+        copy_tree(dd, &root);
+        log_line(
+            &format!(
+                "sync done: {} files processed (missing or changed files copied, nothing deleted)",
+                COPY_DONE.load(Ordering::SeqCst)
+            ),
+            &root,
+        );
+        let lu2 = count_lu(&root);
+        log_line(&format!("root .lu count after sync: {}", lu2), &root);
+        if lu2 < 100 {
+            msgbox(
+                "Could not prepare the game files in this folder (still not enough .lu modules after sync).\nTry a different folder (e.g. Documents) with enough free space.",
+                "Fruitcraft",
+                MB_ICONERROR,
+            );
+            return;
         }
+    } else {
+        log_line("root runtime already complete - no sync performed", &root);
     }
-
-    copy_tree(&data_dir, &root);
-    log_line(
-        &format!(
-            "copy done: {} files synced into app root",
-            COPY_DONE.load(Ordering::SeqCst)
-        ),
-        &root,
-    );
 
     // ---- 5) launch the engine ----
     set_status(READY);
