@@ -1,0 +1,21 @@
+local L0_1, L1_1
+L0_1 = {}
+L0_1.Item1 = "Xameen"
+L0_1["Item1 description"] = "The miraculous leaf that heals creatures."
+L0_1.Item2 = "Paleez"
+L0_1["Item2 description"] = "Instantly turns the world into a tragic garden."
+L0_1.Item3 = "RoboLeaf"
+L0_1["Item3 description"] = "An Ironic leaf that attracts any type of loot."
+L0_1.Item4 = "Bloody knife"
+L0_1["Item4 description"] = "An Enhanced knife painted in blood."
+L0_1.Item5 = "Cursed gun"
+L0_1["Item5 description"] = "Curses its enemies in a deep dark ambient."
+L0_1.Item6 = "Thorny"
+L0_1["Item6 description"] = "A heroic creature that rules the seven seas."
+L0_1.Item7 = "Hair Dryer"
+L0_1["Item7 description"] = "Blows out anything in its way and electrifies everything."
+L0_1.Item8 = "Rainbow gun"
+L0_1["Item8 description"] = "Hits enemy at the right moment in right place."
+L0_1.Item9 = "Admiral sword"
+L0_1["Item9 description"] = "One of the sharpest most powerful sword in the world."
+return L0_1

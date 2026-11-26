@@ -1,0 +1,9 @@
+-- Fruit Craft v1.10.10760 - Desktop build (reconstructed for Solar2D Windows)
+settings = {
+    orientation = {
+        "landscapeLeft",
+        "landscapeRight",
+    },
+    contentScale = "auto",
+    preferredFramesPerSecond = 30,
+}

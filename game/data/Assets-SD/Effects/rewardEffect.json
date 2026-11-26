@@ -1,0 +1,76 @@
+{
+   "textureFileName":"Assets-SD/Effects/rewardEffect.png",
+   "configName":"rewardEffect",
+    "maxParticles": 200,
+    "duration": 1,
+
+
+    "gravityx": 300,
+    "gravityy": 0,
+    
+    "startColorRed": 1,
+    "startColorGreen": 1,
+    "startColorBlue": 1,
+    "startColorAlpha": 1,
+    
+    "startColorVarianceRed": 0,
+    "startColorVarianceGreen": 0,
+    "startColorVarianceBlue": 0,
+    "startColorVarianceAlpha": 0,
+    
+    "startParticleSize": 15,
+    "startParticleSizeVariance": 3,
+    
+    
+    "finishColorRed": 1,
+    "finishColorBlue": 1,
+    "finishColorGreen": 1,
+    "finishColorAlpha": 1,
+    
+    "finishColorVarianceRed": 0,
+    "finishColorVarianceGreen": 0,
+    "finishColorVarianceBlue": 0,
+    "finishColorVarianceAlpha": 0,
+    
+    "finishParticleSize": 15,
+    "finishParticleSizeVariance": 3,
+    
+    "particleLifespan": 2,
+    "particleLifespanVariance": 0.05,
+     
+    "speed": 70,
+    "speedVariance": 10,
+    
+    "angle": -0,
+    "angleVariance": -10,
+
+    "rotationStart": 0,
+    "rotationStartVariance": 0,
+    "rotationEnd": 0,
+    "rotationEndVariance": 0,
+    
+    "rotatePerSecond": 111.32,
+    "rotatePerSecondVariance": 20,
+    
+    "minRadius": 0,
+    "maxRadius": 500,
+    "minRadiusVariance": 0,
+    "maxRadiusVariance": 0,
+    
+
+    "tangentialAcceleration": 0,
+    "radialAcceleration": -100,
+    "radialAccelVariance": 0,
+    "tangentialAccelVariance": -0,
+    
+    
+    "yCoordFlipped": -1,
+    "emitterType": 2,
+    "blendFuncSource": 770,
+    "blendFuncDestination": 1,
+    
+    "sourcePositionVariancex": 10,
+    "sourcePositionVariancey": 10,
+    
+    "textureImageData": ""
+}

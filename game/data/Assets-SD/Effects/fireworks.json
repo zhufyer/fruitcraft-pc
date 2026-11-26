@@ -1,0 +1,95 @@
+{
+    // The name of the image that your particles will be made from
+    "textureFileName": "Assets-SD/Effects/snow.png",
+    "configName": "fireworks",
+    
+    // the maximum number of particles
+    "maxParticles": 100,
+    // length of time that your emmiter creates particles
+    "duration": 2,
+
+    // gravity direction:
+
+    "gravityx": 0,
+    // positive Y means down
+    "gravityy":90,
+    
+    // initial tint
+    "startColorRed": 1,
+    "startColorGreen": 1,
+    "startColorBlue": 1,
+    "startColorAlpha": 0.7,
+    
+    // how much variety you want in the colours of your created particles.
+    // for example: each particle a random initial red color is selected within 
+    // [startColorRed -startColorVarianceRed , startColorRed + startColorVarianceRed]
+    "startColorVarianceRed": 1,
+    "startColorVarianceGreen": 1,
+    "startColorVarianceBlue": 1,
+    "startColorVarianceAlpha": 0.5,
+    
+    // particle size
+    "startParticleSize": 20,
+    "startParticleSizeVariance": 20,
+    
+    
+    "finishColorRed": 1,
+    "finishColorBlue": 1,
+    "finishColorGreen": 1,
+    "finishColorAlpha": 0,
+    
+    "finishColorVarianceRed": 0,
+    "finishColorVarianceGreen": 0,
+    "finishColorVarianceBlue": 0,
+    "finishColorVarianceAlpha": 0,
+    
+    "finishParticleSize": 10,
+    "finishParticleSizeVariance": 0,
+    
+    // lifespan for each particle after it has been created by the emitter
+    "particleLifespan":4,
+    "particleLifespanVariance": 0.8553,
+     
+    // initial particle speed (vector size)
+    "speed": 100,
+    "speedVariance": 30,
+    
+    // initial speed vector direction
+    // for angle -90 means upward
+    "angle": -90,
+    "angleVariance": -120,
+
+    // initial particle image rotation
+    "rotationStart": 0,
+    "rotationStartVariance": 0,
+    "rotationEnd": 0,
+    "rotationEndVariance": 0,
+    
+    "rotatePerSecond": 111.32,
+    "rotatePerSecondVariance": 0,
+    
+    "minRadius": 0,
+    "maxRadius": 500,
+    "minRadiusVariance": 0,
+    "maxRadiusVariance": 0,
+    
+
+    "tangentialAcceleration": -0,
+    "radialAcceleration": 0,
+    "radialAccelVariance": 0,
+    "tangentialAccelVariance": -0,
+    
+    
+    "yCoordFlipped": -1,
+    "emitterType": 0,
+    "blendFuncSource": 770,
+    "blendFuncDestination": 1,
+    
+     // emitter radius, affects where particles are created from.
+    "sourcePositionVariancex": 100,
+    "sourcePositionVariancey": 30,
+    
+    
+    "textureImageData": ""
+        
+}

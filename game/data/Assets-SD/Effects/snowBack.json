@@ -1,0 +1,78 @@
+{
+    "textureFileName": "Assets-SD/Effects/snow.png",
+    "configName": "snowBack",
+    
+    "maxParticles": 60,
+    "duration": -1,
+    "gravityx": 50,
+    "gravityy":140,
+    
+    "startColorRed": 1,
+    "startColorGreen": 1,
+    "startColorBlue": 1,
+    "startColorAlpha": 0.8,
+    
+    "startColorVarianceRed": 0,
+    "startColorVarianceGreen": 0,
+    "startColorVarianceBlue": 0,
+    "startColorVarianceAlpha": 0,
+    
+    "startParticleSize": 20,
+    "startParticleSizeVariance": 10,
+    
+    
+    "finishColorRed": 1,
+    "finishColorBlue": 1,
+    "finishColorGreen": 1,
+    "finishColorAlpha": 0.8,
+    
+    "finishColorVarianceRed": 0,
+    "finishColorVarianceGreen": 0,
+    "finishColorVarianceBlue": 0,
+    "finishColorVarianceAlpha": 0,
+    
+    "finishParticleSize": 0,
+    "finishParticleSizeVariance": 0,
+    
+    
+    "particleLifespan":10,
+    "particleLifespanVariance": 0.8553,
+    
+    "speed": 0,
+    "speedVariance": 30,
+    
+    "angle": -90,
+    "angleVariance": -40,
+    "rotationStart": 0,
+    "rotationStartVariance": 0,
+    "rotationEnd": 0,
+    "rotationEndVariance": 0,
+    "rotatePerSecond": 111.32,
+    "rotatePerSecondVariance": 0,
+    
+    "minRadius": 0,
+    "maxRadius": 500,
+    "minRadiusVariance": 0,
+    "maxRadiusVariance": 0,
+    
+    "tangentialAcceleration": -0,
+    "radialAcceleration": 0,
+    "radialAccelVariance": 10,
+    "tangentialAccelVariance": -0,
+    
+    
+    "yCoordFlipped": -1,
+    "emitterType": 0,
+    "blendFuncSource": 770,
+    "blendFuncDestination": 1,
+    
+    "sourcePositionVariancex": 280,
+    "sourcePositionVariancey": 7,
+    
+    
+    "textureImageData": ""
+    
+    
+    
+    
+}

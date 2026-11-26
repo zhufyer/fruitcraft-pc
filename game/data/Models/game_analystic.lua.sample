@@ -1,0 +1,205 @@
+-- GameAnalytics Lua SDK (v2) API Reference
+-- File: gameanalytics_api_reference.lua
+-- Last Updated: [Current Date]
+-- https://github.com/GameAnalytics/GA-SDK-COCOS2D/
+
+local gameanalytics = require("plugin.gameanalytics_v2")
+
+-- =============================================
+-- 1. INITIALIZATION AND CONFIGURATION
+-- =============================================
+
+-- Initialize SDK (must be called first)
+-- Parameters:
+--   options (table): {
+--     gameKey: string (required),
+--     gameSecret: string (required),
+--   }
+gameanalytics.initialize({
+    gameKey = "YOUR_GAME_KEY",
+    gameSecret = "YOUR_SECRET_KEY",
+})
+
+-- Configure user ID (can be called after initialize)
+-- Parameters:
+--   userId: string
+gameanalytics.configureUserId("player_12345")
+
+-- Configure build version
+-- Parameters:
+--   build: string
+gameanalytics.configureBuild("1.0.0")
+
+-- Enable/disable logging
+gameanalytics.setEnabledInfoLog(true)    -- boolean
+gameanalytics.setEnabledVerboseLog(true) -- boolean
+
+-- Configure available custom dimensions (must be set before using them)
+gameanalytics.configureAvailableCustomDimensions01({"ninja", "samurai"})
+gameanalytics.configureAvailableCustomDimensions02({"hardcore", "casual"})
+gameanalytics.configureAvailableCustomDimensions03({"asia", "europe"})
+
+-- Configure available resource currencies
+gameanalytics.configureAvailableResourceCurrencies({"gold", "gems"})
+
+-- Configure available resource item types
+gameanalytics.configureAvailableResourceItemTypes({"boost", "lives"})
+
+-- =============================================
+-- 2. EVENT TRACKING
+-- =============================================
+
+-- Business Event (in-app purchases)
+-- Parameters:
+--   options (table): {
+--     currency: string (required),
+--     amount: number (required, in cents),
+--     itemType: string (required),
+--     itemId: string (required),
+--     cartType: string (required),
+--     receipt: string (iOS only),
+--     store: string (iOS only),
+--     signature: string (Android only)
+--   }
+gameanalytics.addBusinessEvent({
+    currency = "USD",
+    amount = 199,  -- $1.99
+    itemType = "Consumable",
+    itemId = "com.example.50coins",
+    cartType = "Main",
+    -- iOS specific:
+    receipt = "base64encodedreceipt",
+    store = "AppStore",
+    -- Android specific:
+    signature = "signature"
+})
+
+-- Design Event (game design metrics)
+-- Parameters:
+--   options (table): {
+--     eventId: string (required),
+--     value: number (optional)
+--   }
+gameanalytics.addDesignEvent({
+    eventId = "LevelCompleted:World1",
+    value = 1.0
+})
+
+-- Error Event (exceptions and issues)
+-- Parameters:
+--   options (table): {
+--     severity: string (required: "Critical", "Error", "Warning", "Info", "Debug"),
+--     message: string (required)
+--   }
+gameanalytics.addErrorEvent({
+    severity = "Error",
+    message = "Network timeout"
+})
+
+-- Progression Event (game progression)
+-- Parameters:
+--   options (table): {
+--     progressionStatus: string (required: "Start", "Complete", "Fail"),
+--     progression01: string (required),
+--     progression02: string (optional),
+--     progression03: string (optional),
+--     score: number (optional)
+--   }
+gameanalytics.addProgressionEvent({
+    progressionStatus = "Complete",
+    progression01 = "World1",
+    progression02 = "Level5",
+    score = 1000
+})
+
+-- Resource Event (economy tracking)
+-- Parameters:
+--   options (table): {
+--     flowType: string (required: "Source" or "Sink"),
+--     currency: string (required),
+--     amount: number (required),
+--     itemType: string (required),
+--     itemId: string (required)
+--   }
+gameanalytics.addResourceEvent({
+    flowType = "Sink",  -- "Source" for gaining, "Sink" for spending
+    currency = "Gold",
+    amount = 50,
+    itemType = "PowerUp",
+    itemId = "DoubleDamage"
+})
+
+-- =============================================
+-- 3. SESSION MANAGEMENT
+-- =============================================
+
+-- Start session (auto-called on initialize)
+gameanalytics.startSession()
+
+-- End session
+gameanalytics.endSession()
+
+-- =============================================
+-- 4. CUSTOM DIMENSIONS
+-- =============================================
+
+-- Set custom dimensions (must be pre-configured)
+gameanalytics.setCustomDimension01("ninja")  -- e.g., player type
+gameanalytics.setCustomDimension02("hardcore") -- e.g., play style
+gameanalytics.setCustomDimension03("europe")  -- e.g., region
+
+-- =============================================
+-- 5. ADDITIONAL FEATURES
+-- =============================================
+
+-- Set Facebook ID
+gameanalytics.setFacebookId("facebook123")
+
+-- Set gender
+gameanalytics.setGender("Male")  -- "Male", "Female", or nil
+
+-- Set birth year
+gameanalytics.setBirthYear(1990)
+
+-- =============================================
+-- BEST PRACTICES
+-- =============================================
+
+-- 1. Always call initialize() first
+-- 2. Configure available dimensions/currencies before using them
+-- 3. Use meaningful event IDs for design events
+-- 4. Include all required parameters for business events
+-- 5. Set user ID as early as possible
+-- 6. Use proper severity levels for error events
+
+-- =============================================
+-- EXAMPLE USAGE FLOW
+-- =============================================
+
+-- Initialization
+gameanalytics.initialize({
+    gameKey = "1234567890abcdef",
+    secretKey = "abcdef1234567890",
+    userId = system.getInfo("deviceID")
+})
+
+-- Player progression
+gameanalytics.addProgressionEvent({
+    progressionStatus = "Start",
+    progression01 = "Tutorial"
+})
+
+-- Purchase tracking
+gameanalytics.addBusinessEvent({
+    currency = "USD",
+    amount = 499,
+    itemType = "Consumable",
+    itemId = "com.example.100coins",
+    cartType = "Main"
+})
+
+-- Error reporting
+gameanalytics.addErrorEvent({
+    severity = "Error",
+    message = "Failed to load player data"
+})

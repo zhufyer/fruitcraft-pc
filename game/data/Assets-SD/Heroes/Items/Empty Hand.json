@@ -1,0 +1,1 @@
+{"skeleton":{"hash":"IWgawIAjE2Tk2eLRI0U6hTtDb54","spine":"3.1.04","width":0,"height":0,"images":"./images/"},"bones":[{"name":"root"}],"slots":[{"name":"Empty hand","bone":"root","attachment":"Empty hand"}],"skins":{"default":{"Empty hand":{"Empty hand":{"x":159.78,"y":-307.21,"scaleX":0.231,"scaleY":0.231,"width":530,"height":540}}}},"animations":{"animation":{}}}
