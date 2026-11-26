@@ -1,5 +1,5 @@
 // ============================================================
-//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.08b, Rust)
+//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.08c, Rust)
 //  Zero dependencies (raw Win32 FFI), built for x86_64-pc-windows-gnu.
 //
 //  * strips the "Mark of the Web" (Zone.Identifier ADS) from
@@ -216,6 +216,8 @@ extern "system" {
     fn GetMessageW(m: *mut MSG, h: HWND, a: u32, b: u32) -> i32;
     fn DispatchMessageW(m: *const MSG) -> LRESULT;
     fn GetWindowPlacement(h: HWND, wp: *mut WINDOWPLACEMENT) -> BOOL;
+    fn GetWindowRect(h: HWND, r: *mut RECT) -> BOOL;
+    fn GetLastError() -> DWORD;
 }
 
 const IMAGE_ICON: u32 = 3;
@@ -234,6 +236,9 @@ const SW_SHOWMAXIMIZED: i32 = 3;
 const MB_ICONERROR: u32 = 0x10;
 const MB_ICONQUESTION: u32 = 0x20;
 const MB_ICONWARNING: u32 = 0x30;
+const MB_YESNOCANCEL: u32 = 0x0006;
+const IDYES: i32 = 6;
+const IDNO: i32 = 7;
 const MB_OKCANCEL: u32 = 0x0001;
 const IDOK: i32 = 1;
 const DT_LEFT: u32 = 0x0000;
@@ -268,6 +273,7 @@ static PCT: AtomicI32 = AtomicI32::new(-1);
 static COPY_DONE: AtomicI32 = AtomicI32::new(0);
 static COPY_TOTAL: AtomicI32 = AtomicI32::new(1);
 static PROFILE_SEL: AtomicI32 = AtomicI32::new(0);
+static ROOT: Mutex<String> = Mutex::new(String::new());
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -341,11 +347,12 @@ fn set_status(text: &str) {
     if hwnd.is_null() {
         let hinst = HINST.load(Ordering::SeqCst) as HINSTANCE;
         unsafe {
+            let cls = wide("FruitcraftStatus");
             let mut wc: WNDCLASSEXW = mem::zeroed();
             wc.cbSize = mem::size_of::<WNDCLASSEXW>() as u32;
             wc.lpfnWndProc = Some(wnd_proc);
             wc.hbrBackground = std::ptr::null_mut();
-            wc.lpszClassName = wide("FruitcraftStatus").as_ptr();
+            wc.lpszClassName = cls.as_ptr();
             wc.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW as u32 as usize as LPCWSTR);
             wc.hInstance = hinst;
             wc.hIcon = LoadImageW(hinst, 1usize as LPCWSTR, IMAGE_ICON, 32, 32, 0) as HICON;
@@ -645,6 +652,7 @@ unsafe extern "system" fn dlg_proc(hwnd: HWND, msg: u32, w: WPARAM, _l: LPARAM) 
     match msg {
         WM_COMMAND => {
             let id = (w & 0xFFFF) as i32;
+            log_root(&format!("profile dlg: WM_COMMAND id={}", id));
             PROFILE_SEL.store(if (1..=4).contains(&id) { id } else { 0 }, Ordering::SeqCst);
             DestroyWindow(hwnd);
             0
@@ -658,27 +666,64 @@ unsafe extern "system" fn dlg_proc(hwnd: HWND, msg: u32, w: WPARAM, _l: LPARAM) 
 }
 
 // Modal profile picker: four profile buttons + exit.
+fn log_root(msg: &str) {
+    let r = ROOT.lock().unwrap().clone();
+    log_line(msg, Path::new(&r));
+}
+
+fn pick_profile_fallback() -> i32 {
+    // Last-resort picker using message boxes (Yes = pick, No = next, Cancel = exit)
+    for i in 1..=4i32 {
+        let r = unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                wide(&format!("Select profile {}?", i)).as_ptr(),
+                wide("Fruitcraft").as_ptr(),
+                MB_YESNOCANCEL,
+            )
+        };
+        if r == IDYES {
+            return i;
+        }
+        if r == IDCANCEL as i32 {
+            return 0;
+        }
+    }
+    0
+}
+
 fn pick_profile() -> i32 {
     PROFILE_SEL.store(0, Ordering::SeqCst);
     let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
     unsafe {
+        let cls = wide("FruitcraftDlg");
         let mut wc: WNDCLASSEXW = mem::zeroed();
         wc.cbSize = mem::size_of::<WNDCLASSEXW>() as u32;
         wc.lpfnWndProc = Some(dlg_proc);
         wc.hbrBackground = std::ptr::null_mut();
-        wc.lpszClassName = wide("FruitcraftDlg").as_ptr();
+        wc.lpszClassName = cls.as_ptr();
         wc.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW as u32 as usize as LPCWSTR);
         wc.hInstance = hinst;
         wc.hIcon = LoadImageW(hinst, 1usize as LPCWSTR, IMAGE_ICON, 32, 32, 0) as HICON;
-        RegisterClassExW(&wc);
+        let atom = RegisterClassExW(&wc);
+        if atom == 0 {
+            log_root(&format!(
+                "profile dlg: RegisterClassExW FAILED err={}",
+                GetLastError()
+            ));
+        }
 
         let mut wa: RECT = mem::zeroed();
-        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as *mut c_void, 0);
+        let spi_ok = SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as *mut c_void, 0);
         let x = wa.left + (wa.right - wa.left) / 2 - 240;
         let y = wa.top + (wa.bottom - wa.top) / 2 - 235;
+        log_root(&format!(
+            "profile dlg: workarea spi_ok={} rect=({},{},{},{}) window at ({},{})",
+            spi_ok, wa.left, wa.top, wa.right, wa.bottom, x, y
+        ));
         let hwnd = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            wide("FruitcraftDlg").as_ptr(),
+            cls.as_ptr(),
             wide("Fruitcraft \u{2014} \u{0627}\u{0646}\u{062a}\u{062e}\u{0627}\u{0628} \u{067e}\u{0631}\u{0648}\u{0641}\u{0627}\u{06cc}\u{0644}").as_ptr(),
             WS_POPUP | WS_CAPTION | WS_SYSMENU,
             x,
@@ -691,8 +736,13 @@ fn pick_profile() -> i32 {
             std::ptr::null(),
         );
         if hwnd.is_null() {
-            return 0;
+            log_root(&format!(
+                "profile dlg: CreateWindowExW FAILED err={}",
+                GetLastError()
+            ));
+            return pick_profile_fallback();
         }
+        log_root("profile dlg: window created, showing");
         let btns: [(&str, u32, i32); 5] = [
             ("\u{067e}\u{0631}\u{0648}\u{0641}\u{0627}\u{06cc}\u{0644} 1 \u{2014} \u{0627}\u{0635}\u{0644}\u{06cc}", BS_DEFPUSHBUTTON, 1),
             ("\u{067e}\u{0631}\u{0648}\u{0641}\u{0627}\u{06cc}\u{0644} 2", BS_PUSHBUTTON, 2),
@@ -718,12 +768,21 @@ fn pick_profile() -> i32 {
         }
         ShowWindow(hwnd, SW_SHOW);
         UpdateWindow(hwnd);
+        let mut wr: RECT = mem::zeroed();
+        if GetWindowRect(hwnd, &mut wr) != 0 {
+            log_root(&format!(
+                "profile dlg: shown rect=({},{},{},{})",
+                wr.left, wr.top, wr.right, wr.bottom
+            ));
+        }
         let mut m: MSG = mem::zeroed();
         while GetMessageW(&mut m, std::ptr::null_mut(), 0, 0) != 0 {
             DispatchMessageW(&m);
         }
     }
-    PROFILE_SEL.load(Ordering::SeqCst)
+    let sel = PROFILE_SEL.load(Ordering::SeqCst);
+    log_root(&format!("profile dlg: closed, selection={}", sel));
+    sel
 }
 
 fn main() {
@@ -745,9 +804,10 @@ fn main() {
         Some(p) => p.to_path_buf(),
         None => return,
     };
+    *ROOT.lock().unwrap() = root.to_string_lossy().to_string();
     log_line(
         &format!(
-            "Fruitcraft launcher v0.1.08b (rust) starting; root={}",
+            "Fruitcraft launcher v0.1.08c (rust) starting; root={}",
             root.display()
         ),
         &root,
@@ -937,6 +997,7 @@ fn main() {
         ensure_dir(&p.join("appdata"));
         ensure_dir(&p.join("local"));
     }
+    log_line("showing profile picker", &root);
     let profile = pick_profile();
     if profile == 0 {
         log_line("no profile selected - exiting", &root);
