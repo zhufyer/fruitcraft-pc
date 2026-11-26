@@ -1,5 +1,5 @@
 // ============================================================
-//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.09a, Rust)
+//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.09b, Rust)
 //  Zero dependencies (raw Win32 FFI), built for x86_64-pc-windows-gnu.
 //
 //  * strips the "Mark of the Web" (Zone.Identifier ADS) from
@@ -218,6 +218,11 @@ extern "system" {
     fn GetWindowPlacement(h: HWND, wp: *mut WINDOWPLACEMENT) -> BOOL;
     fn GetWindowRect(h: HWND, r: *mut RECT) -> BOOL;
     fn GetLastError() -> DWORD;
+    fn SetWindowTextW(h: HWND, s: LPCWSTR) -> i32;
+    fn GetWindowTextW(h: HWND, s: LPWSTR, n: i32) -> i32;
+    fn AddFontResourceW(n: LPCWSTR) -> i32;
+    fn LoadLibraryW(n: LPCWSTR) -> *mut c_void;
+    fn GetProcAddress(m: *mut c_void, n: *const c_void) -> *mut c_void;
 }
 
 const IMAGE_ICON: u32 = 3;
@@ -236,6 +241,13 @@ const SW_SHOWMAXIMIZED: i32 = 3;
 const MB_ICONERROR: u32 = 0x10;
 const MB_ICONQUESTION: u32 = 0x20;
 const MB_ICONWARNING: u32 = 0x30;
+const MB_ICONINFORMATION: u32 = 0x40;
+const WS_OVERLAPPED: u32 = 0x0000_0000;
+const WS_MINIMIZEBOX: u32 = 0x0002_0000;
+const WM_CREATE: u32 = 0x0001;
+const WM_MOUSEMOVE: u32 = 0x0200;
+const WM_LBUTTONDOWN: u32 = 0x0201;
+const WM_LBUTTONUP: u32 = 0x0202;
 const MB_YESNOCANCEL: u32 = 0x0006;
 const IDYES: i32 = 6;
 const IDNO: i32 = 7;
@@ -268,6 +280,7 @@ const READY: &str = "\u{0622}\u{0645}\u{0627}\u{062f}\u{0647}\u{200c}\u{0633}\u{
 
 static HINST: AtomicIsize = AtomicIsize::new(0);
 static HWIN: AtomicIsize = AtomicIsize::new(0);
+static ROOT: Mutex<String> = Mutex::new(String::new());
 static STATUS: Mutex<String> = Mutex::new(String::new());
 static PCT: AtomicI32 = AtomicI32::new(-1);
 static COPY_DONE: AtomicI32 = AtomicI32::new(0);
@@ -671,63 +684,865 @@ fn write_last_profile(n: i32) {
 // Profile picker built from plain message boxes - the most reliable UI on
 // Windows (same mechanism as system dialogs). Yes = this profile,
 // No = next profile, Cancel = exit.
-fn pick_profile() -> i32 {
+
+// ==================================================================
+//  Game-styled launcher UI (v0.1.09b)
+//  Background + logo + font come from the game's own assets.
+//  GDI+ is loaded dynamically (no extra import libs needed).
+// ==================================================================
+
+#[repr(C)]
+struct RectF {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+}
+
+#[repr(C)]
+struct GpStartupInput {
+    version: u32,
+    cb: *const c_void,
+    suppress_bg: u32,
+    suppress_codecs: u32,
+}
+
+type GpStartupFn =
+    unsafe extern "system" fn(*mut u64, *const GpStartupInput, *mut c_void) -> i32;
+type GpShutdownFn = unsafe extern "system" fn(u64);
+type GpFromHdcFn = unsafe extern "system" fn(HDC, *mut *mut c_void) -> i32;
+type GpBitmapFileFn = unsafe extern "system" fn(LPCWSTR, *mut *mut c_void) -> i32;
+type GpFontFamFn = unsafe extern "system" fn(LPCWSTR, *mut c_void, *mut *mut c_void) -> i32;
+type GpFontFn =
+    unsafe extern "system" fn(*mut c_void, f32, i32, i32, *mut *mut c_void) -> i32;
+type GpSolidFillFn = unsafe extern "system" fn(u32, *mut *mut c_void) -> i32;
+type GpPenFn = unsafe extern "system" fn(u32, f32, i32, *mut *mut c_void) -> i32;
+type GpStrFmtFn = unsafe extern "system" fn(i32, i32, *mut *mut c_void) -> i32;
+type GpStrFmtAlignFn = unsafe extern "system" fn(*mut c_void, i32) -> i32;
+type GpDrawStrFn = unsafe extern "system" fn(
+    *mut c_void,
+    LPCWSTR,
+    i32,
+    *mut c_void,
+    *mut RectF,
+    *mut c_void,
+    *mut c_void,
+) -> i32;
+type GpFillRectIFn =
+    unsafe extern "system" fn(*mut c_void, *mut c_void, i32, i32, i32, i32) -> i32;
+type GpDrawImageRectIFn =
+    unsafe extern "system" fn(*mut c_void, *mut c_void, i32, i32, i32, i32) -> i32;
+type GpPathFn = unsafe extern "system" fn(i32, *mut *mut c_void) -> i32;
+type GpPathArcFn =
+    unsafe extern "system" fn(*mut c_void, f32, f32, f32, f32, f32, f32) -> i32;
+type GpPathCloseFn = unsafe extern "system" fn(*mut c_void) -> i32;
+type GpFillPathFn = unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
+type GpDrawPathFn = unsafe extern "system" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
+type GpDeleteFn = unsafe extern "system" fn(*mut c_void);
+
+struct GpFns {
+    startup: GpStartupFn,
+    shutdown: GpShutdownFn,
+    from_hdc: GpFromHdcFn,
+    bitmap_file: GpBitmapFileFn,
+    font_fam: GpFontFamFn,
+    font: GpFontFn,
+    solid_fill: GpSolidFillFn,
+    pen: GpPenFn,
+    str_fmt: GpStrFmtFn,
+    fmt_align: GpStrFmtAlignFn,
+    fmt_line_align: GpStrFmtAlignFn,
+    draw_str: GpDrawStrFn,
+    fill_rect_i: GpFillRectIFn,
+    draw_image_rect_i: GpDrawImageRectIFn,
+    path: GpPathFn,
+    path_arc: GpPathArcFn,
+    path_close: GpPathCloseFn,
+    fill_path: GpFillPathFn,
+    draw_path: GpDrawPathFn,
+    delete: GpDeleteFn,
+}
+
+fn gp_get(mod_h: *mut c_void, name: &str) -> *mut c_void {
+    let n = wide(name);
+    unsafe { GetProcAddress(mod_h, n.as_ptr() as *const c_void) }
+}
+
+unsafe fn load_gp_fns() -> Option<GpFns> {
+    let mod_h = LoadLibraryW(wide("gdiplus.dll").as_ptr());
+    if mod_h.is_null() {
+        return None;
+    }
+    macro_rules! req {
+        ($name:expr) => {{
+            let p = gp_get(mod_h, $name);
+            if p.is_null() {
+                return None;
+            }
+            std::mem::transmute::<*mut c_void, _>(p)
+        }};
+    }
+    Some(GpFns {
+        startup: req!("GdiplusStartup"),
+        shutdown: req!("GdiplusShutdown"),
+        from_hdc: req!("GdipCreateFromHDC"),
+        bitmap_file: req!("GdipCreateBitmapFromFile"),
+        font_fam: req!("GdipCreateFontFamilyFromName"),
+        font: req!("GdipCreateFont"),
+        solid_fill: req!("GdipCreateSolidFill"),
+        pen: req!("GdipCreatePen1"),
+        str_fmt: req!("GdipCreateStringFormat"),
+        fmt_align: req!("GdipSetStringFormatAlignment"),
+        fmt_line_align: req!("GdipSetStringFormatLineAlignment"),
+        draw_str: req!("GdipDrawString"),
+        fill_rect_i: req!("GdipGraphicsFillRectangleI"),
+        draw_image_rect_i: req!("GdipGraphicsDrawImageRectI"),
+        path: req!("GdipCreatePath"),
+        path_arc: req!("GdipAddPathArc"),
+        path_close: req!("GdipClosePathFigure"),
+        fill_path: req!("GdipGraphicsFillPath"),
+        draw_path: req!("GdipGraphicsDrawPath"),
+        delete: req!("GdipDeleteObject"),
+    })
+}
+
+static GP_FNS: Mutex<Option<GpFns>> = Mutex::new(None);
+
+fn log_root_line(msg: &str) {
+    let r = ROOT.lock().unwrap().clone();
+    log_line(msg, Path::new(&r));
+}
+
+struct UiState {
+    sel: i32,
+    hover: i32,
+    pressed: i32,
+    result: i32,
+    hwnd: HWND,
+    token: u64,
+    bg: *mut c_void,
+    logo: *mut c_void,
+    fam_a: *mut c_void,
+    fam_b: *mut c_void,
+    f_title: *mut c_void,
+    f_sub: *mut c_void,
+    f_name: *mut c_void,
+    f_btn: *mut c_void,
+    f_label: *mut c_void,
+    fmt_center: *mut c_void,
+    edit: HWND,
+    names: [String; 4],
+    created: [bool; 4],
+    profiles_root: String,
+}
+
+// Only ever touched from the main thread under the UI mutex.
+unsafe impl Send for UiState {}
+static UI: Mutex<Option<UiState>> = Mutex::new(None);
+
+const UI_W: i32 = 680;
+const UI_H: i32 = 420;
+const CARD_W: i32 = 148;
+const CARD_H: i32 = 150;
+const CARD_Y: i32 = 150;
+const CARD_X0: i32 = 26;
+const CARD_DX: i32 = 160;
+const BTN_Y: i32 = 316;
+const BTN_H: i32 = 58;
+const ES_AUTOHSCROLL: u32 = 0x0008;
+const WS_BORDER: u32 = 0x0080_0000;
+const WS_EX_APPWINDOW: u32 = 0x0004_0000;
+
+// control ids: 11..14 cards, 20 start, 21 create, 22 exit
+fn card_x(i: i32) -> i32 {
+    CARD_X0 + i * CARD_DX
+}
+
+fn btn_x(id: i32) -> (i32, i32) {
+    match id {
+        20 => (26, 200),
+        21 => (240, 200),
+        22 => (454, 200),
+        _ => (0, 0),
+    }
+}
+
+fn brighten(c: u32) -> u32 {
+    let r = ((c >> 16) & 0xFF).min(237) as u32;
+    let g = ((c >> 8) & 0xFF).min(237) as u32;
+    let b = (c & 0xFF).min(237) as u32;
+    0xFF000000 | (r << 16) | (g << 8) | b
+}
+
+fn ui_hit_test(x: i32, y: i32) -> i32 {
+    for i in 0..4 {
+        let cx = card_x(i);
+        if x >= cx && x <= cx + CARD_W && y >= CARD_Y && y <= CARD_Y + CARD_H {
+            return 11 + i;
+        }
+    }
+    for id in [20, 21, 22] {
+        let (bx, bw) = btn_x(id);
+        if x >= bx && x <= bx + bw && y >= BTN_Y && y <= BTN_Y + BTN_H {
+            return id;
+        }
+    }
+    0
+}
+
+// creates a rounded-rect path; caller must GdipDeleteObject it
+fn make_rounded_path(gp: &GpFns, x: i32, y: i32, w: i32, h: i32, r: f32) -> *mut c_void {
+    let mut p: *mut c_void = std::ptr::null_mut();
+    if unsafe { (gp.path)(0, &mut p) } != 0 || p.is_null() {
+        return std::ptr::null_mut();
+    }
+    let r2 = r * 2.0;
+    unsafe {
+        (gp.path_arc)(p, x as f32, y as f32, r2, r2, 180.0, 90.0);
+        (gp.path_arc)(
+            p,
+            (x + w) as f32 - r2,
+            y as f32,
+            r2,
+            r2,
+            270.0,
+            90.0,
+        );
+        (gp.path_arc)(
+            p,
+            (x + w) as f32 - r2,
+            (y + h) as f32 - r2,
+            r2,
+            r2,
+            0.0,
+            90.0,
+        );
+        (gp.path_arc)(p, x as f32, (y + h) as f32 - r2, r2, r2, 90.0, 90.0);
+        (gp.path_close)(p);
+    }
+    p
+}
+
+// draw a string centered inside a box
+fn draw_str_c(
+    gp: &GpFns,
+    g: *mut c_void,
+    text: &str,
+    font: *mut c_void,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: u32,
+    fmt: *mut c_void,
+) {
+    let s = wide(text);
+    let mut rect = RectF {
+        x: x as f32,
+        y: y as f32,
+        w: w as f32,
+        h: h as f32,
+    };
+    let mut brush: *mut c_void = std::ptr::null_mut();
+    if unsafe { (gp.solid_fill)(color, &mut brush) } != 0 {
+        return;
+    }
+    unsafe {
+        (gp.draw_str)(g, s.as_ptr(), -1, font, &mut rect, fmt, brush);
+        (gp.delete)(brush);
+    }
+}
+
+fn fill_rounded(
+    gp: &GpFns,
+    g: *mut c_void,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    r: f32,
+    fill: u32,
+    border: u32,
+    border_w: f32,
+) {
+    let p = make_rounded_path(gp, x, y, w, h, r);
+    if p.is_null() {
+        return;
+    }
+    unsafe {
+        let mut fb: *mut c_void = std::ptr::null_mut();
+        if (gp.solid_fill)(fill, &mut fb) == 0 {
+            (gp.fill_path)(g, fb, p);
+            (gp.delete)(fb);
+        }
+        let mut pen: *mut c_void = std::ptr::null_mut();
+        if (gp.pen)(border, border_w, 2, &mut pen) == 0 {
+            (gp.draw_path)(g, pen, p);
+            (gp.delete)(pen);
+        }
+        (gp.delete)(p);
+    }
+}
+
+fn paint_ui(st: &UiState, hdc: HDC, gp: &GpFns) {
+    let mut g: *mut c_void = std::ptr::null_mut();
+    if unsafe { (gp.from_hdc)(hdc, &mut g) } != 0 || g.is_null() {
+        return;
+    }
+    unsafe {
+        // background
+        if !st.bg.is_null() {
+            (gp.draw_image_rect_i)(g, st.bg, 0, 0, UI_W, UI_H);
+        }
+        // dark overlay for readability
+        let mut ov: *mut c_void = std::ptr::null_mut();
+        if (gp.solid_fill)(0x6E000000, &mut ov) == 0 {
+            (gp.fill_rect_i)(g, ov, 0, 0, UI_W, UI_H);
+            (gp.delete)(ov);
+        }
+        // game logo
+        if !st.logo.is_null() {
+            (gp.draw_image_rect_i)(g, st.logo, 160, 16, 360, 100);
+        }
+        // subtitle
+        draw_str_c(
+            gp,
+            g,
+            "انتخاب پروفایل و شروع بازی",
+            st.f_sub,
+            0,
+            122,
+            UI_W,
+            30,
+            0xF2FFFFFF,
+            st.fmt_center,
+        );
+        // profile cards
+        for i in 0..4usize {
+            let i32 = i as i32;
+            let cx = card_x(i32);
+            let selected = st.sel == i32 + 1;
+            let hovered = st.hover == 11 + i32;
+            let (fill, border, bw) = if selected {
+                (0x5CFFFFFF, 0xFFFFD24A, 3.0f32)
+            } else if hovered {
+                (0x4D3A5A78, 0xB3FFFFFF, 2.0)
+            } else {
+                (0x42182634, 0x59FFFFFF, 1.5)
+            };
+            fill_rounded(gp, g, cx, CARD_Y, CARD_W, CARD_H, 16.0, fill, border, bw);
+            let title = format!("پروفایل {}", ["۱", "۲", "۳", "۴"][i]);
+            draw_str_c(
+                gp,
+                g,
+                &title,
+                st.f_title,
+                cx,
+                CARD_Y + 26,
+                CARD_W,
+                36,
+                if st.created[i] {
+                    0xFFFFFFFF
+                } else {
+                    0xFFB9C6CF
+                },
+                st.fmt_center,
+            );
+            let sub = if st.created[i] {
+                st.names[i].as_str()
+            } else {
+                "خالی"
+            };
+            draw_str_c(
+                gp,
+                g,
+                sub,
+                st.f_name,
+                cx,
+                CARD_Y + 78,
+                CARD_W,
+                28,
+                if st.created[i] {
+                    0xFFE8F0F5
+                } else {
+                    0xFF8FA0AC
+                },
+                st.fmt_center,
+            );
+        }
+        // buttons
+        let btns: [(i32, u32, &str); 3] = [
+            (20, 0xFF2FA84F, "شروع"),
+            (21, 0xFF2E86C1, "ساخت پروفایل"),
+            (22, 0xFFC0392B, "خروج"),
+        ];
+        for (id, color, label) in btns.iter() {
+            let (bx, bw) = btn_x(*id);
+            let c = if st.hover == *id {
+                brighten(*color)
+            } else {
+                *color
+            };
+            fill_rounded(gp, g, bx, BTN_Y, bw, BTN_H, 12.0, c, 0x66000000, 2.0);
+            draw_str_c(
+                gp,
+                g,
+                label,
+                st.f_btn,
+                bx,
+                BTN_Y + 13,
+                bw,
+            32,
+                0xFFFFFFFF,
+                st.fmt_center,
+            );
+        }
+        // name label (right of the edit box)
+        draw_str_c(
+            gp,
+            g,
+            "نام:",
+            st.f_label,
+            566,
+            384,
+            88,
+            30,
+            0xFFE8F0F5,
+            st.fmt_center,
+        );
+    }
+    unsafe {
+        (gp.delete)(g);
+    }
+}
+
+fn ui_set_edit(st: &UiState, text: &str) {
+    if !st.edit.is_null() {
+        let w = wide(text);
+        unsafe { SetWindowTextW(st.edit, w.as_ptr()) };
+    }
+}
+
+fn ui_read_edit(st: &UiState) -> String {
+    if st.edit.is_null() {
+        return String::new();
+    }
+    let mut buf = vec![0u16; 128];
+    let n = unsafe { GetWindowTextW(st.edit, buf.as_mut_ptr(), buf.len() as i32) };
+    if n > 0 {
+        String::from_utf16_lossy(&buf[..n as usize]).trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+fn profile_file(st: &UiState, n: i32) -> PathBuf {
+    PathBuf::from(st.profiles_root.as_str())
+        .join(format!("p{}", n))
+        .join("profile.txt")
+}
+
+fn ui_action(st: &mut UiState, id: i32) {
+    match id {
+        11..=14 => {
+            st.sel = id - 10;
+            write_last_profile(st.sel);
+            ui_set_edit(st, &st.names[(st.sel - 1).max(0) as usize]);
+        }
+        20 => {
+            // شروع: persist the name, then launch
+            if st.sel >= 1 && st.sel <= 4 {
+                let n = (st.sel - 1) as usize;
+                let name = ui_read_edit(st);
+                if !name.is_empty() {
+                    st.names[n] = name;
+                }
+                st.created[n] = true;
+                let _ = fs::write(profile_file(st, st.sel), st.names[n].as_str());
+            }
+            write_last_profile(st.sel);
+            st.result = st.sel;
+            unsafe { DestroyWindow(st.hwnd) };
+        }
+        21 => {
+            // ساخت پروفایل: first slot without a marker
+            if let Some(j) = (0..4).find(|j| !st.created[*j]) {
+                let name = ui_read_edit(st);
+                st.created[j] = true;
+                if !name.is_empty() {
+                    st.names[j] = name;
+                }
+                let _ = fs::write(
+                    profile_file(st, (j + 1) as i32),
+                    st.names[j].as_str(),
+                );
+                st.sel = j as i32 + 1;
+                write_last_profile(st.sel);
+                ui_set_edit(st, &st.names[j]);
+            } else {
+                unsafe {
+                    MessageBoxW(
+                        st.hwnd,
+                        wide("همهٔ پروفایل‌ها ساخته شده‌اند")
+                            .as_ptr(),
+                        wide("Fruitcraft").as_ptr(),
+                        MB_ICONINFORMATION,
+                    );
+                }
+            }
+        }
+        22 => {
+            st.result = 0;
+            unsafe { DestroyWindow(st.hwnd) };
+        }
+        _ => {}
+    }
+}
+
+unsafe extern "system" fn ui_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    match msg {
+        WM_CREATE => {
+            let hinst = GetModuleHandleW(std::ptr::null());
+            let edit = CreateWindowExW(
+                0,
+                wide("EDIT").as_ptr(),
+                std::ptr::null(),
+                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                40,
+                386,
+                500,
+                28,
+                hwnd,
+                std::ptr::null_mut(),
+                hinst,
+                std::ptr::null(),
+            );
+            if let Some(st) = UI.lock().unwrap().as_mut() {
+                st.edit = edit;
+                ui_set_edit(st, &st.names[((st.sel - 1) as usize).min(3)]);
+            }
+            0
+        }
+        WM_PAINT => {
+            let mut ps: PAINTSTRUCT = mem::zeroed();
+            let hdc = BeginPaint(hwnd, &mut ps);
+            // lock order everywhere: UI then GP_FNS
+            let ui_g = UI.lock().unwrap();
+            let gp_g = GP_FNS.lock().unwrap();
+            if let (Some(st), Some(gp)) = (ui_g.as_ref(), gp_g.as_ref()) {
+                paint_ui(st, hdc, gp);
+            }
+            EndPaint(hwnd, &ps);
+            0
+        }
+        WM_MOUSEMOVE => {
+            let x = (l as u32 & 0xFFFF) as i32;
+            let y = ((l as u32 >> 16) & 0xFFFF) as i32;
+            let id = ui_hit_test(x, y);
+            let mut changed = false;
+            if let Some(mut st) = UI.lock().unwrap().as_mut() {
+                changed = st.hover != id;
+                st.hover = id;
+            }
+            if changed {
+                unsafe { InvalidateRect(hwnd, std::ptr::null(), 0) };
+            }
+            0
+        }
+        WM_LBUTTONDOWN => {
+            let x = (l as u32 & 0xFFFF) as i32;
+            let y = ((l as u32 >> 16) & 0xFFFF) as i32;
+            if let Some(mut st) = UI.lock().unwrap().as_mut() {
+                st.pressed = ui_hit_test(x, y);
+            }
+            0
+        }
+        WM_LBUTTONUP => {
+            let x = (l as u32 & 0xFFFF) as i32;
+            let y = ((l as u32 >> 16) & 0xFFFF) as i32;
+            let id = ui_hit_test(x, y);
+            let fire = UI
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| s.pressed == id && id != 0)
+                .unwrap_or(false);
+            if let Some(mut st) = UI.lock().unwrap().as_mut() {
+                st.pressed = 0;
+            }
+            if fire {
+                if let Some(mut st) = UI.lock().unwrap().as_mut() {
+                    ui_action(&mut st, id);
+                }
+            }
+            0
+        }
+        WM_ERASEBKGND => 1,
+        WM_CLOSE => {
+            unsafe { DestroyWindow(hwnd) };
+            0
+        }
+        WM_DESTROY => {
+            PostQuitMessage(0);
+            0
+        }
+        _ => DefWindowProcW(hwnd, msg, w, l),
+    }
+}
+
+// Fallback picker (plain message boxes, English text - always legible).
+fn pick_profile_msgbox() -> i32 {
     let last = read_last_profile();
-    let text_a = format!(
-        "Fruitcraft - {}\n\n{} {} {} {}?\n\nYes = {}   |   No = {}   |   Cancel = {}",
-        "\u{627}\u{646}\u{62A}\u{62E}\u{627}\u{628} \u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644}",
-        "\u{628}\u{627} \u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644}",
-        last,
-        "(\u{627}\u{633}\u{62A}\u{641}\u{627}\u{62F}\u{647}\u{654} \u{642}\u{628}\u{644}\u{6CC}) \u{634}\u{631}\u{648}\u{639} \u{6A9}\u{646}\u{645}",
-        "\u{61F}",
-        "\u{634}\u{631}\u{648}\u{639}",
-        "\u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644} \u{62F}\u{6CC}\u{6AF}\u{631}",
-        "\u{62E}\u{631}\u{648}\u{62C}",
-    );
     let first = unsafe {
         MessageBoxW(
             std::ptr::null_mut(),
-            wide(&text_a).as_ptr(),
+            wide(&format!(
+                "Fruitcraft\n\nStart with profile {} (last used)?\n\nYes = start   No = pick another   Cancel = exit",
+                last
+            ))
+            .as_ptr(),
             wide("Fruitcraft").as_ptr(),
             MB_YESNOCANCEL,
         )
     };
-    let sel = if first == IDYES {
-        last
-    } else if first == IDCANCEL as i32 {
+    if first == IDCANCEL as i32 {
         return 0;
-    } else {
-        let mut i = 1;
-        loop {
-            let text_b = format!(
-                "Fruitcraft - {}\n\nYes = {} {}\nNo = {}\nCancel = {}",
-                "\u{627}\u{646}\u{62A}\u{62E}\u{627}\u{628} \u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644}",
-                "\u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644}",
-                i,
-                "\u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644} بعدی",
-                "\u{62E}\u{631}\u{648}\u{62C}",
-            );
-            let r = unsafe {
-                MessageBoxW(
-                    std::ptr::null_mut(),
-                    wide(&text_b).as_ptr(),
-                    wide("Fruitcraft").as_ptr(),
-                    MB_YESNOCANCEL,
-                )
-            };
-            if r == IDYES {
-                break;
-            } else if r == IDCANCEL as i32 {
-                return 0;
-            } else {
-                i = if i == 4 { 1 } else { i + 1 };
+    }
+    if first == IDYES {
+        write_last_profile(last);
+        return last;
+    }
+    let mut i = 1;
+    loop {
+        let r = unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                wide(&format!(
+                    "Fruitcraft\n\nYes = profile {}   No = next profile   Cancel = exit",
+                    i
+                ))
+                .as_ptr(),
+                wide("Fruitcraft").as_ptr(),
+                MB_YESNOCANCEL,
+            )
+        };
+        if r == IDYES {
+            write_last_profile(i);
+            return i;
+        }
+        if r == IDCANCEL as i32 {
+            return 0;
+        }
+        i = if i == 4 { 1 } else { i + 1 };
+    }
+}
+
+fn pick_profile_ui(game_dir: &Path, profiles_root: &Path) -> i32 {
+    // read profile names / created state
+    let mut names: [String; 4] = Default::default();
+    let mut created: [bool; 4] = [false; 4];
+    let def = ["پروفایل ۱", "پروفایل ۲", "پروفایل ۳", "پروفایل ۴"];
+    for n in 0..4 {
+        let pf = profiles_root
+            .join(format!("p{}", n + 1))
+            .join("profile.txt");
+        if let Ok(s) = fs::read_to_string(&pf) {
+            let s = s.trim().to_string();
+            created[n] = true;
+            if !s.is_empty() {
+                names[n] = s;
             }
         }
-        i
+        if names[n].is_empty() {
+            names[n] = def[n].to_string();
+        }
+    }
+
+    // dynamic GDI+
+    let gp = match unsafe { load_gp_fns() } {
+        Some(g) => g,
+        None => {
+            log_root_line("gdiplus.dll not loadable - falling back to message boxes");
+            return pick_profile_msgbox();
+        }
     };
-    write_last_profile(sel);
-    sel
+    let mut token: u64 = 0;
+    let si = GpStartupInput {
+        version: 1,
+        cb: std::ptr::null(),
+        suppress_bg: 0,
+        suppress_codecs: 0,
+    };
+    if unsafe { (gp.startup)(&mut token, &si, std::ptr::null_mut()) } != 0 {
+        log_root_line("GdiplusStartup failed - falling back to message boxes");
+        return pick_profile_msgbox();
+    }
+    GP_FNS.lock().unwrap().replace(gp);
+
+    // register the game fonts
+    for f in ["QuadonSoltan.ttf", "QuadonSoltanBold.ttf", "adivery_dana_normal.ttf"] {
+        let p = game_dir.join(f);
+        if p.is_file() {
+            let w = wide(&p.to_string_lossy());
+            let _ = unsafe { AddFontResourceW(w.as_ptr()) };
+        }
+    }
+
+    // load bitmaps
+    let gp_g2 = GP_FNS.lock().unwrap();
+    let gp_ref = gp_g2.as_ref().unwrap();
+    let mut bg: *mut c_void = std::ptr::null_mut();
+    let bgp = game_dir
+        .join("Assets-SD")
+        .join("Splash")
+        .join("FC-SplashBackground@2x.png");
+    if bgp.is_file() {
+        let w = wide(&bgp.to_string_lossy());
+        unsafe { (gp_ref.bitmap_file)(w.as_ptr(), &mut bg) };
+    }
+    let mut logo: *mut c_void = std::ptr::null_mut();
+    let lp = game_dir
+        .join("Assets-SD")
+        .join("Splash")
+        .join("Fruit-Craft-E@2x.png");
+    if lp.is_file() {
+        let w = wide(&lp.to_string_lossy());
+        unsafe { (gp_ref.bitmap_file)(w.as_ptr(), &mut logo) };
+    }
+
+    // fonts (game fonts with Tahoma fallback)
+    fn fam(gp: &GpFns, name: &str) -> *mut c_void {
+        let mut f: *mut c_void = std::ptr::null_mut();
+        if unsafe { (gp.font_fam)(wide(name).as_ptr(), std::ptr::null_mut(), &mut f) } == 0
+            && !f.is_null()
+        {
+            return f;
+        }
+        let mut t: *mut c_void = std::ptr::null_mut();
+        unsafe {
+            (gp.font_fam)(
+                wide("Tahoma").as_ptr(),
+                std::ptr::null_mut(),
+                &mut t,
+            )
+        };
+        t
+    }
+    let famq = fam(gp_ref, "Quadon Soltan");
+    let fammad = fam(gp_ref, "Dana");
+    let mut f_title: *mut c_void = std::ptr::null_mut();
+    let mut f_sub: *mut c_void = std::ptr::null_mut();
+    let mut f_name: *mut c_void = std::ptr::null_mut();
+    let mut f_btn: *mut c_void = std::ptr::null_mut();
+    let mut f_label: *mut c_void = std::ptr::null_mut();
+    unsafe {
+        (gp_ref.font)(famq, 26.0, 1, 2, &mut f_title);
+        (gp_ref.font)(fammad, 20.0, 0, 2, &mut f_sub);
+        (gp_ref.font)(fammad, 16.0, 0, 2, &mut f_name);
+        (gp_ref.font)(fammad, 22.0, 1, 2, &mut f_btn);
+        (gp_ref.font)(fammad, 17.0, 0, 2, &mut f_label);
+    }
+    let mut fmt_center: *mut c_void = std::ptr::null_mut();
+    unsafe {
+        // NoClip | DirectionRTL
+        (gp_ref.str_fmt)(0x0001 | 0x0002, 0, &mut fmt_center);
+        (gp_ref.fmt_align)(fmt_center, 1);
+        (gp_ref.fmt_line_align)(fmt_center, 1);
+    }
+
+    // window
+    let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
+    let cls = wide("FruitcraftUi");
+    let mut wc: WNDCLASSEXW = unsafe { mem::zeroed() };
+    wc.cbSize = mem::size_of::<WNDCLASSEXW>() as u32;
+    wc.lpfnWndProc = Some(ui_proc);
+    wc.hbrBackground = std::ptr::null_mut();
+    wc.lpszClassName = cls.as_ptr();
+    wc.hCursor =
+        unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW as u32 as usize as LPCWSTR) };
+    wc.hInstance = hinst;
+    unsafe { RegisterClassExW(&wc) };
+    let mut wa: RECT = unsafe { mem::zeroed() };
+    unsafe {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as *mut c_void, 0);
+    }
+    let ww = UI_W;
+    let wh = UI_H + 40;
+    let x = wa.left + (wa.right - wa.left) / 2 - ww / 2;
+    let y = wa.top + (wa.bottom - wa.top) / 2 - wh / 2;
+    let hwnd = unsafe {
+        CreateWindowExW(
+            WS_EX_APPWINDOW,
+            cls.as_ptr(),
+            wide("Fruitcraft").as_ptr(),
+            WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+            x,
+            y,
+            ww,
+            wh,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            hinst,
+            std::ptr::null(),
+        )
+    };
+    if hwnd.is_null() {
+        log_root_line(&format!(
+            "launcher ui window FAILED err={} - falling back to message boxes",
+            unsafe { GetLastError() }
+        ));
+        return pick_profile_msgbox();
+    }
+    let last = read_last_profile();
+    UI.lock().unwrap().replace(UiState {
+        sel: last,
+        hover: 0,
+        pressed: 0,
+        result: 0,
+        hwnd,
+        token,
+        bg,
+        logo,
+        fam_a: famq,
+        fam_b: fammad,
+        f_title,
+        f_sub,
+        f_name,
+        f_btn,
+        f_label,
+        fmt_center,
+        edit: std::ptr::null_mut(),
+        names,
+        created,
+        profiles_root: profiles_root.to_string_lossy().to_string(),
+    });
+    log_root_line("launcher ui window shown");
+    unsafe {
+        ShowWindow(hwnd, SW_SHOW);
+        UpdateWindow(hwnd);
+        SetForegroundWindow(hwnd);
+    }
+    let mut m: MSG = unsafe { mem::zeroed() };
+    loop {
+        let r = unsafe { GetMessageW(&mut m, std::ptr::null_mut(), 0, 0) };
+        if r == 0 || r == -1 {
+            break;
+        }
+        unsafe { DispatchMessageW(&m) };
+    }
+    let result = UI
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.result)
+        .unwrap_or(0);
+    unsafe {
+        (gp_ref.shutdown)(token);
+    }
+    GP_FNS.lock().unwrap().take();
+    result
 }
+
 
 fn main() {
     let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
@@ -748,9 +1563,10 @@ fn main() {
         Some(p) => p.to_path_buf(),
         None => return,
     };
+    *ROOT.lock().unwrap() = root.to_string_lossy().to_string();
     log_line(
         &format!(
-            "Fruitcraft launcher v0.1.09a (rust) starting; root={}",
+            "Fruitcraft launcher v0.1.09b (rust) starting; root={}",
             root.display()
         ),
         &root,
@@ -916,7 +1732,7 @@ fn main() {
         ensure_dir(&p.join("local"));
     }
     log_line("showing profile picker", &root);
-    let profile = pick_profile();
+    let profile = pick_profile_ui(&game_dir, &profiles_root);
     if profile == 0 {
         log_line("no profile selected - exiting", &root);
         return;
