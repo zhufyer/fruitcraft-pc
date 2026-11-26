@@ -1,5 +1,5 @@
 // ============================================================
-//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.04b, Rust)
+//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.06b, Rust)
 //  Zero dependencies (raw Win32 FFI), built for x86_64-pc-windows-gnu.
 //
 //  * strips the "Mark of the Web" (Zone.Identifier ADS) from
@@ -166,6 +166,7 @@ extern "system" {
     fn LoadCursorW(inst: HINSTANCE, n: LPCWSTR) -> HCURSOR;
     fn SystemParametersInfoW(a: u32, p: u32, v: *mut c_void, f: u32) -> BOOL;
     fn FindWindowW(cls: LPCWSTR, name: LPCWSTR) -> HWND;
+    fn SendMessageW(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT;
     fn IsWindowVisible(h: HWND) -> BOOL;
     fn SetForegroundWindow(h: HWND) -> BOOL;
     fn CreateProcessW(
@@ -199,6 +200,7 @@ const WM_PAINT: u32 = 0x000F;
 const WM_ERASEBKGND: u32 = 0x0014;
 const WM_CLOSE: u32 = 0x0010;
 const WM_DESTROY: u32 = 0x0002;
+const WM_SETTEXT: u32 = 0x000C;
 const SW_SHOW: i32 = 5;
 const SW_SHOWMAXIMIZED: i32 = 3;
 const MB_ICONERROR: u32 = 0x10;
@@ -471,16 +473,24 @@ fn browse_for_folder() -> Option<PathBuf> {
     None
 }
 
-// Find the engine's main window by its title ("Fruitcraft" is set by
-// the game bootstrap right at startup).
+// Find the engine's main window by its title. The bootstrap tries to
+// set "Fruitcraft"; if the platform no-ops that, the window keeps its
+// default "Corona Shell" title - try both.
 fn find_game_window() -> HWND {
+    let mut last: HWND = std::ptr::null_mut();
     unsafe {
-        let h = FindWindowW(std::ptr::null(), wide("Fruitcraft").as_ptr());
-        if !h.is_null() && IsWindowVisible(h) != 0 {
-            return h;
+        for title in ["Fruitcraft", "Corona Shell", "Corona.Shell", "Corona"] {
+            let h = FindWindowW(std::ptr::null(), wide(title).as_ptr());
+            if h.is_null() {
+                continue;
+            }
+            if IsWindowVisible(h) != 0 {
+                return h;
+            }
+            last = h;
         }
     }
-    std::ptr::null_mut()
+    last
 }
 
 fn main() {
@@ -504,7 +514,7 @@ fn main() {
     };
     log_line(
         &format!(
-            "Fruitcraft launcher v0.1.04b (rust) starting; root={}",
+            "Fruitcraft launcher v0.1.06b (rust) starting; root={}",
             root.display()
         ),
         &root,
@@ -655,13 +665,27 @@ fn main() {
     }
     let engine_w = wide(&engine_path.to_string_lossy());
     let cwd_w = wide(&root.to_string_lossy());
+
+    // Pass the bootstrap entry point as an argument so the engine loads
+    // it directly instead of popping a file picker. The shell accepts the
+    // main-file path as its first argument.
+    let main_lua = root.join("main.lua");
+    let main_lua_s = main_lua.to_string_lossy().to_string();
+    let cmdline = if main_lua.is_file() {
+        format!("\"{}\" \"{}\"", engine_path.to_string_lossy(), main_lua_s)
+    } else {
+        format!("\"{}\"", engine_path.to_string_lossy())
+    };
+    log_line(&format!("engine command line: {}", cmdline), &root);
+    let mut cmd_w = wide(&cmdline);
+
     let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
     si.cb = mem::size_of::<STARTUPINFOW>() as u32;
     let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
     let ok = unsafe {
         CreateProcessW(
             engine_w.as_ptr(),
-            std::ptr::null_mut(),
+            cmd_w.as_mut_ptr(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             0,
@@ -695,11 +719,14 @@ fn main() {
         }
     }
     if !game_hwnd.is_null() {
+        let title_w = wide("Fruitcraft");
         unsafe {
             ShowWindow(game_hwnd, SW_SHOWMAXIMIZED);
             SetForegroundWindow(game_hwnd);
+            // Replace the "Corona Shell" title with the game name.
+            SendMessageW(game_hwnd, WM_SETTEXT, 0, title_w.as_ptr() as LPARAM);
         }
-        log_line("engine window found and maximized", &root);
+        log_line("engine window found, maximized, title set to Fruitcraft", &root);
     } else {
         // no window within 12 s: check what happened
         let mut code: u32 = 0;
