@@ -864,20 +864,22 @@ const BTN_Y: i32 = 316;
 const BTN_H: i32 = 58;
 const NAME_Y: i32 = 384;
 const NAME_H: i32 = 26;
-const EDIT_X: i32 = 40;
+const EDIT_X: i32 = 170;
 const EDIT_W: i32 = 470;
+const ES_RIGHT: u32 = 0x0002;
 const ES_AUTOHSCROLL: u32 = 0x0008;
 const WS_BORDER: u32 = 0x0080_0000;
 const WS_EX_APPWINDOW: u32 = 0x0004_0000;
 
+// RTL layout: the UI reads right-to-left, so slot 1 is the right-most card
 fn card_x(i: i32) -> i32 {
-    CARD_X0 + i * CARD_DX
+    CARD_X0 + (3 - i) * CARD_DX
 }
 fn btn_x(id: i32) -> (i32, i32) {
     match id {
-        20 => (26, 200),
-        21 => (240, 200),
-        _ => (454, 200),
+        20 => (454, 200), // شروع   - right-most
+        21 => (240, 200), // ساخت پروفایل
+        _ => (26, 200),   // خروج    - left-most
     }
 }
 
@@ -999,12 +1001,19 @@ fn text_w(hdc: HDC, s: &[u16]) -> i32 {
     }
 }
 
-fn draw_text_at(hdc: HDC, s: &[u16], x: i32, y: i32, color: u32, center_w: i32) {
+/// align: 0 = left, >0 = centred inside that width, <0 = right edge at |align|
+fn draw_text_at(hdc: HDC, s: &[u16], x: i32, y: i32, color: u32, align: i32) {
     if s.is_empty() {
         return;
     }
     let w = text_w(hdc, s);
-    let px = if center_w > 0 { x + (center_w - w) / 2 } else { x };
+    let px = if align > 0 {
+        x + (align - w) / 2
+    } else if align < 0 {
+        x + (-align) - w
+    } else {
+        x
+    };
     unsafe {
         SetBkMode(hdc, TRANSPARENT);
         SetTextColor(hdc, color & 0x00FF_FFFF);
@@ -1161,7 +1170,7 @@ fn draw_text_usp(
     x: i32,
     y: i32,
     color: u32,
-    center_w: i32,
+    align: i32,
 ) -> Option<i32> {
     let chars: Vec<u16> = text
         .encode_utf16()
@@ -1253,7 +1262,13 @@ fn draw_text_usp(
         attrs.truncate(nglyphs as usize);
         runs.push((0, w, glyphs, adv, goff, attrs, analysis));
     }
-    let ox = if center_w > 0 { x + (center_w - total) / 2 } else { x };
+    let ox = if align > 0 {
+        x + (align - total) / 2
+    } else if align < 0 {
+        x + (-align) - total
+    } else {
+        x
+    };
     let col = (color & 0xFF) << 16 | (color & 0xFF00) | ((color >> 16) & 0xFF);
     unsafe {
         SetTextColor(hdc, col);
@@ -1284,14 +1299,14 @@ fn draw_text_usp(
 }
 
 /// One entry point used by the painter: Uniscribe first, built-in shaper after.
-fn draw_line(us: &Option<Uniscribe>, hdc: HDC, text: &str, x: i32, y: i32, color: u32, center_w: i32) {
+fn draw_line(us: &Option<Uniscribe>, hdc: HDC, text: &str, x: i32, y: i32, color: u32, align: i32) {
     if let Some(u) = us.as_ref() {
-        if draw_text_usp(u, hdc, text, x, y, color, center_w).is_some() {
+        if draw_text_usp(u, hdc, text, x, y, color, align).is_some() {
             return;
         }
     }
     let v = shape_visual(text);
-    draw_text_at(hdc, &v, x, y, color, center_w);
+    draw_text_at(hdc, &v, x, y, color, align);
 }
 
 fn make_font(face: &str, px: i32, weight: i32) -> HFONT {
@@ -2124,13 +2139,13 @@ fn paint_ui(st: &UiState, hdc: HDC) {
         draw_line(us, dc, label, bx, ty, 0xFFFFFF, bw);
     }
 
-    // name box frame + label
+    // name box frame + label (label on the LEFT of the box: RTL reading order)
     round_fill(dc, EDIT_X - 6, NAME_Y - 6, EDIT_W + 12, NAME_H + 12, 10, 0x1A2430, 100);
     unsafe {
         SelectObject(dc, st.fonts.label as HGDIOBJ);
     }
     // "نام:" right after the edit box
-    draw_line(us, dc, "نام:", 560, NAME_Y - 2, 0xE8F0F5, 60);
+    draw_line(us, dc, "نام:", 6, NAME_Y - 2, 0xE8F0F5, 150);
 
     // blit
     unsafe {
@@ -2292,7 +2307,7 @@ unsafe extern "system" fn ui_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                 0,
                 wide("EDIT").as_ptr(),
                 std::ptr::null(),
-                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL,
+                WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL | ES_RIGHT,
                 EDIT_X,
                 NAME_Y,
                 EDIT_W,
