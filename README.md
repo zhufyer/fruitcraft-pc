@@ -11,10 +11,11 @@ APK (MD5 `37780547e4172a1905a5abbfcdea0f04`) on the official open-source
 
 Download the release zip → extract → double-click `game/Fruitcraft.exe`.
 
-The launcher (game icon) links `data/` into the app root (junctions/hardlinks,
-no copies) and starts `FruitcraftEngine.exe` maximized. If `data/` is not found
-it offers a folder-picker. Fallback: run `FruitcraftEngine.exe` manually and
-select `main.lua`.
+On first run the launcher copies `data/*` into the app root as real files
+(progress window with the game icon) and starts `FruitcraftEngine.exe`
+maximized. The engine then auto-detects `main.lua` at the root — the exact
+flat layout proven to launch. Later runs are instant.
+Fallback: run `FruitcraftEngine.exe` manually and select `data\main.lua`.
 
 ## Layout
 
@@ -24,10 +25,9 @@ game/
 ├── FruitcraftEngine.exe    Solar2D Windows shell (Corona.Shell.exe)
 ├── 7za.exe, *.dll          engine runtime dependencies
 ├── fruitcraft.ico          official game icon
-├── main.lua / config.lua   bootstrap (redirect to data/)
 ├── build.settings          window: landscape, content scale auto
 └── data/                   all game data
-    ├── FCMain.lua          real entry point (362 Lua modules, untouched)
+    ├── main.lua            real entry point (362 Lua modules, untouched)
     ├── plugin/             safe no-op stubs (ads / analytics / IAP)
     ├── resource.car        original compiled bytecode (reference)
     └── assets…             Assets-SD, fonts (FA/EN), spine, Json, …
@@ -37,8 +37,8 @@ game/
 
 | Part | Where |
 |---|---|
-| Win32 launcher (C, no payload, robust path handling) | `launcher/FruitcraftLauncher.c` |
-| Bootstrap `main.lua` / `config.lua` / `build.settings` | `game/` root |
+| Win32 launcher (C, pure file copy, progress window) | `launcher/FruitcraftLauncher.c` |
+| `build.settings` (window: landscape, scale auto) | `game/` root |
 | Native-plugin stubs (gameanalytics_v2, notifications.v2, appsflyer) | `game/data/plugin/` |
 | Window-title patch for desktop | `game/data/FCMain.lua` (last lines) |
 | Icon build (16–256 px multi-size) | `game/fruitcraft.ico` |

@@ -2,6 +2,16 @@
 
 Versioning: every bug fix ships as a new numbered release + zip asset.
 
+## v0.1.03b — 2026-11-26
+- **Full launcher rewrite**: pure Win32 recursive copy of `data/*` into the
+  app root — real files, no junctions/hardlinks/cmd.exe (antivirus-safe)
+- Visible topmost progress window (game icon + percent) while preparing
+- Runtime layout after first launch = the flat layout proven to launch
+  (engine auto-detects `main.lua` at the app root)
+- Guaranteed manual fallback: run `FruitcraftEngine.exe` → select
+  `data\main.lua` (self-contained game data folder)
+- Data validation accepts `main.lua` / `FCMain.lua` / `gamefiles/` layouts
+
 ## v0.1.02b — 2026-11-26
 - **Fix "FCMain.lua is missing"**: bootstrap (`main.lua` / `config.lua`) now
   resolves game data from the app root, `data/`, or legacy `data/gamefiles/`
