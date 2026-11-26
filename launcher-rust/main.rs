@@ -1,5 +1,5 @@
 // ============================================================
-//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.08c, Rust)
+//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.09a, Rust)
 //  Zero dependencies (raw Win32 FFI), built for x86_64-pc-windows-gnu.
 //
 //  * strips the "Mark of the Web" (Zone.Identifier ADS) from
@@ -272,8 +272,6 @@ static STATUS: Mutex<String> = Mutex::new(String::new());
 static PCT: AtomicI32 = AtomicI32::new(-1);
 static COPY_DONE: AtomicI32 = AtomicI32::new(0);
 static COPY_TOTAL: AtomicI32 = AtomicI32::new(1);
-static PROFILE_SEL: AtomicI32 = AtomicI32::new(0);
-static ROOT: Mutex<String> = Mutex::new(String::new());
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
@@ -648,140 +646,86 @@ fn build_env_block(appdata: &str, local: &str) -> Vec<u16> {
     out
 }
 
-unsafe extern "system" fn dlg_proc(hwnd: HWND, msg: u32, w: WPARAM, _l: LPARAM) -> LRESULT {
-    match msg {
-        WM_COMMAND => {
-            let id = (w & 0xFFFF) as i32;
-            log_root(&format!("profile dlg: WM_COMMAND id={}", id));
-            PROFILE_SEL.store(if (1..=4).contains(&id) { id } else { 0 }, Ordering::SeqCst);
-            DestroyWindow(hwnd);
-            0
+fn read_last_profile() -> i32 {
+    if let Some(appdata) = get_env("APPDATA") {
+        let p = PathBuf::from(appdata).join("Fruitcraft").join("lastprofile.txt");
+        if let Ok(s) = fs::read_to_string(&p) {
+            if let Ok(n) = s.trim().parse::<i32>() {
+                if (1..=4).contains(&n) {
+                    return n;
+                }
+            }
         }
-        WM_CLOSE | WM_DESTROY => {
-            PostQuitMessage(0);
-            0
-        }
-        _ => DefWindowProcW(hwnd, msg, w, _l),
+    }
+    1
+}
+
+fn write_last_profile(n: i32) {
+    if let Some(appdata) = get_env("APPDATA") {
+        let dir = PathBuf::from(appdata).join("Fruitcraft");
+        ensure_dir(&dir);
+        let _ = fs::write(dir.join("lastprofile.txt"), n.to_string());
     }
 }
 
-// Modal profile picker: four profile buttons + exit.
-fn log_root(msg: &str) {
-    let r = ROOT.lock().unwrap().clone();
-    log_line(msg, Path::new(&r));
-}
-
-fn pick_profile_fallback() -> i32 {
-    // Last-resort picker using message boxes (Yes = pick, No = next, Cancel = exit)
-    for i in 1..=4i32 {
-        let r = unsafe {
-            MessageBoxW(
-                std::ptr::null_mut(),
-                wide(&format!("Select profile {}?", i)).as_ptr(),
-                wide("Fruitcraft").as_ptr(),
-                MB_YESNOCANCEL,
-            )
-        };
-        if r == IDYES {
-            return i;
-        }
-        if r == IDCANCEL as i32 {
-            return 0;
-        }
-    }
-    0
-}
-
+// Profile picker built from plain message boxes - the most reliable UI on
+// Windows (same mechanism as system dialogs). Yes = this profile,
+// No = next profile, Cancel = exit.
 fn pick_profile() -> i32 {
-    PROFILE_SEL.store(0, Ordering::SeqCst);
-    let hinst = unsafe { GetModuleHandleW(std::ptr::null()) };
-    unsafe {
-        let cls = wide("FruitcraftDlg");
-        let mut wc: WNDCLASSEXW = mem::zeroed();
-        wc.cbSize = mem::size_of::<WNDCLASSEXW>() as u32;
-        wc.lpfnWndProc = Some(dlg_proc);
-        wc.hbrBackground = std::ptr::null_mut();
-        wc.lpszClassName = cls.as_ptr();
-        wc.hCursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW as u32 as usize as LPCWSTR);
-        wc.hInstance = hinst;
-        wc.hIcon = LoadImageW(hinst, 1usize as LPCWSTR, IMAGE_ICON, 32, 32, 0) as HICON;
-        let atom = RegisterClassExW(&wc);
-        if atom == 0 {
-            log_root(&format!(
-                "profile dlg: RegisterClassExW FAILED err={}",
-                GetLastError()
-            ));
-        }
-
-        let mut wa: RECT = mem::zeroed();
-        let spi_ok = SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut _ as *mut c_void, 0);
-        let x = wa.left + (wa.right - wa.left) / 2 - 240;
-        let y = wa.top + (wa.bottom - wa.top) / 2 - 235;
-        log_root(&format!(
-            "profile dlg: workarea spi_ok={} rect=({},{},{},{}) window at ({},{})",
-            spi_ok, wa.left, wa.top, wa.right, wa.bottom, x, y
-        ));
-        let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            cls.as_ptr(),
-            wide("Fruitcraft \u{2014} \u{0627}\u{0646}\u{062a}\u{062e}\u{0627}\u{0628} \u{067e}\u{0631}\u{0648}\u{0641}\u{0627}\u{06cc}\u{0644}").as_ptr(),
-            WS_POPUP | WS_CAPTION | WS_SYSMENU,
-            x,
-            y,
-            480,
-            470,
+    let last = read_last_profile();
+    let text_a = format!(
+        "Fruitcraft - {}\n\n{} {} {} {}?\n\nYes = {}   |   No = {}   |   Cancel = {}",
+        "\u{627}\u{646}\u{62A}\u{62E}\u{627}\u{628} \u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644}",
+        "\u{628}\u{627} \u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644}",
+        last,
+        "(\u{627}\u{633}\u{62A}\u{641}\u{627}\u{62F}\u{647}\u{654} \u{642}\u{628}\u{644}\u{6CC}) \u{634}\u{631}\u{648}\u{639} \u{6A9}\u{646}\u{645}",
+        "\u{61F}",
+        "\u{634}\u{631}\u{648}\u{639}",
+        "\u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644} \u{62F}\u{6CC}\u{6AF}\u{631}",
+        "\u{62E}\u{631}\u{648}\u{62C}",
+    );
+    let first = unsafe {
+        MessageBoxW(
             std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            hinst,
-            std::ptr::null(),
-        );
-        if hwnd.is_null() {
-            log_root(&format!(
-                "profile dlg: CreateWindowExW FAILED err={}",
-                GetLastError()
-            ));
-            return pick_profile_fallback();
-        }
-        log_root("profile dlg: window created, showing");
-        let btns: [(&str, u32, i32); 5] = [
-            ("\u{067e}\u{0631}\u{0648}\u{0641}\u{0627}\u{06cc}\u{0644} 1 \u{2014} \u{0627}\u{0635}\u{0644}\u{06cc}", BS_DEFPUSHBUTTON, 1),
-            ("\u{067e}\u{0631}\u{0648}\u{0641}\u{0627}\u{06cc}\u{0644} 2", BS_PUSHBUTTON, 2),
-            ("\u{067e}\u{0631}\u{0648}\u{0641}\u{0627}\u{06cc}\u{0644} 3", BS_PUSHBUTTON, 3),
-            ("\u{067e}\u{0631}\u{0648}\u{0641}\u{0627}\u{06cc}\u{0644} 4", BS_PUSHBUTTON, 4),
-            ("\u{062e}\u{0631}\u{0648}\u{062c}", BS_PUSHBUTTON, IDCANCEL as i32),
-        ];
-        for (lab, style, id) in btns.iter() {
-            CreateWindowExW(
-                0,
-                wide("BUTTON").as_ptr(),
-                wide(lab).as_ptr(),
-                WS_CHILD | WS_VISIBLE | style,
-                20,
-                50 + ((id - 1) as i32) * 72,
-                440,
-                62,
-                hwnd,
-                std::ptr::null_mut(),
-                hinst,
-                *id as usize as *const c_void,
+            wide(&text_a).as_ptr(),
+            wide("Fruitcraft").as_ptr(),
+            MB_YESNOCANCEL,
+        )
+    };
+    let sel = if first == IDYES {
+        last
+    } else if first == IDCANCEL as i32 {
+        return 0;
+    } else {
+        let mut i = 1;
+        loop {
+            let text_b = format!(
+                "Fruitcraft - {}\n\nYes = {} {}\nNo = {}\nCancel = {}",
+                "\u{627}\u{646}\u{62A}\u{62E}\u{627}\u{628} \u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644}",
+                "\u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644}",
+                i,
+                "\u{67E}\u{631}\u{648}\u{641}\u{627}\u{6CC}\u{644} بعدی",
+                "\u{62E}\u{631}\u{648}\u{62C}",
             );
+            let r = unsafe {
+                MessageBoxW(
+                    std::ptr::null_mut(),
+                    wide(&text_b).as_ptr(),
+                    wide("Fruitcraft").as_ptr(),
+                    MB_YESNOCANCEL,
+                )
+            };
+            if r == IDYES {
+                break;
+            } else if r == IDCANCEL as i32 {
+                return 0;
+            } else {
+                i = if i == 4 { 1 } else { i + 1 };
+            }
         }
-        ShowWindow(hwnd, SW_SHOW);
-        UpdateWindow(hwnd);
-        let mut wr: RECT = mem::zeroed();
-        if GetWindowRect(hwnd, &mut wr) != 0 {
-            log_root(&format!(
-                "profile dlg: shown rect=({},{},{},{})",
-                wr.left, wr.top, wr.right, wr.bottom
-            ));
-        }
-        let mut m: MSG = mem::zeroed();
-        while GetMessageW(&mut m, std::ptr::null_mut(), 0, 0) != 0 {
-            DispatchMessageW(&m);
-        }
-    }
-    let sel = PROFILE_SEL.load(Ordering::SeqCst);
-    log_root(&format!("profile dlg: closed, selection={}", sel));
+        i
+    };
+    write_last_profile(sel);
     sel
 }
 
@@ -804,10 +748,9 @@ fn main() {
         Some(p) => p.to_path_buf(),
         None => return,
     };
-    *ROOT.lock().unwrap() = root.to_string_lossy().to_string();
     log_line(
         &format!(
-            "Fruitcraft launcher v0.1.08c (rust) starting; root={}",
+            "Fruitcraft launcher v0.1.09a (rust) starting; root={}",
             root.display()
         ),
         &root,
@@ -828,114 +771,101 @@ fn main() {
         }
     }
 
-    // ---- 2) determine the runtime layout (NON-DESTRUCTIVE) ----
-    // (a) If the app root already holds the whole game (flat layout from a
-    //     previous run), no sync is needed at all - the user may safely
-    //     delete the data/ folder after the first run.
+    // ---- 2) locate the game files (NO copy into the app root) ----
+    // The engine changes its working directory to the main file's folder,
+    // so the game runs directly from data/ - the app root stays clean.
+    let data_dir = root.join("data");
     let root_lu = count_lu(&root);
+    let data_lu = count_lu(&data_dir);
+    let data_complete = data_dir.join("main.lua").is_file()
+        && data_dir.join("main.lu").is_file()
+        && data_lu >= 100;
     let root_complete = root.join("main.lua").is_file()
         && root.join("main.lu").is_file()
         && root_lu >= 100;
     log_line(
         &format!(
-            "root runtime check: main.lua={} main.lu={} root .lu count={} (complete={})",
-            root.join("main.lua").is_file(),
-            root.join("main.lu").is_file(),
-            root_lu,
-            root_complete
+            "game layout: data .lu={} (complete={}) | root .lu={} (complete={})",
+            data_lu, data_complete, root_lu, root_complete
         ),
         &root,
     );
 
-    let mut data_dir: Option<PathBuf> = None;
-    let mut sync_needed = false;
-
-    if !root_complete {
-        let mut cands: Vec<PathBuf> = vec![root.join("data")];
-        if let Some(par) = root.parent() {
-            cands.push(par.join("data"));
-        }
-        for cand in &cands {
-            if cand.is_dir() {
-                if let Some(d) = resolve_data_dir(cand) {
-                    data_dir = Some(d);
-                    sync_needed = true;
-                    break;
-                }
-            }
-        }
-        if data_dir.is_none() {
-            let choice = unsafe {
-                MessageBoxW(
-                    std::ptr::null_mut(),
-                    wide(
-                        "Game data was not found next to the launcher.\n\nOK: choose the data folder manually\nCancel: exit",
-                    )
-                    .as_ptr(),
-                    wide("Fruitcraft").as_ptr(),
-                    MB_ICONQUESTION | MB_OKCANCEL,
+    let mut game_dir: Option<PathBuf> = None;
+    if data_complete {
+        game_dir = Some(data_dir.clone());
+    } else if root_complete {
+        game_dir = Some(root.clone()); // legacy flat layout from an older version
+    }
+    if game_dir.is_none() {
+        let choice = unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                wide(
+                    "Game data was not found next to the launcher.\n\nOK: choose the data folder manually\nCancel: exit",
                 )
-            };
-            if choice == IDOK {
-                if let Some(picked) = browse_for_folder() {
-                    if let Some(d) = resolve_data_dir(&picked) {
-                        data_dir = Some(d);
-                        sync_needed = true;
-                        // Remember the location via junction - but NEVER
-                        // point the junction back into the app root itself
-                        // (that is what wiped game files in v0.1.05b).
-                        let target = root.join("data");
-                        let related = picked.starts_with(&root) || root.starts_with(&picked);
-                        if !target.exists() && !related {
-                            let cmd = format!(
-                                "cmd.exe /c mklink /J \"{}\" \"{}\" >NUL 2>&1",
-                                target.to_string_lossy(),
-                                picked.to_string_lossy()
-                            );
-                            log_line(&format!("remember data via junction: {}", cmd), &root);
-                            let cmd_w = wide(&cmd);
-                            let cwd_w = wide(&root.to_string_lossy());
-                            unsafe {
-                                CreateProcessW(
-                                    cmd_w.as_ptr(),
-                                    std::ptr::null_mut(),
-                                    std::ptr::null_mut(),
-                                    std::ptr::null_mut(),
-                                    0,
-                                    CREATE_NO_WINDOW,
-                                    std::ptr::null_mut(),
-                                    cwd_w.as_ptr(),
-                                    std::ptr::null(),
-                                    std::ptr::null_mut(),
-                                );
-                            }
-                        }
-                    } else {
-                        msgbox(
-                            "That folder does not look like game data (main.lua / main.lu is missing).",
-                            "Fruitcraft",
-                            MB_ICONERROR,
+                .as_ptr(),
+                wide("Fruitcraft").as_ptr(),
+                MB_ICONQUESTION | MB_OKCANCEL,
+            )
+        };
+        if choice == IDOK {
+            if let Some(picked) = browse_for_folder() {
+                if let Some(d) = resolve_data_dir(&picked) {
+                    // Remember the location via junction - but NEVER point the
+                    // junction back into the app root itself.
+                    let target = root.join("data");
+                    let related = picked.starts_with(&root) || root.starts_with(&picked);
+                    if !target.exists() && !related {
+                        let cmd = format!(
+                            "cmd.exe /c mklink /J \"{}\" \"{}\" >NUL 2>&1",
+                            target.to_string_lossy(),
+                            picked.to_string_lossy()
                         );
-                        return;
+                        log_line(&format!("remember data via junction: {}", cmd), &root);
+                        let cmd_w = wide(&cmd);
+                        let cwd_w = wide(&root.to_string_lossy());
+                        unsafe {
+                            CreateProcessW(
+                                cmd_w.as_ptr(),
+                                std::ptr::null_mut(),
+                                std::ptr::null_mut(),
+                                std::ptr::null_mut(),
+                                0,
+                                CREATE_NO_WINDOW,
+                                std::ptr::null_mut(),
+                                cwd_w.as_ptr(),
+                                std::ptr::null(),
+                                std::ptr::null_mut(),
+                            );
+                        }
                     }
+                    game_dir = Some(d);
+                } else {
+                    msgbox(
+                        "That folder does not look like game data (main.lua / main.lu is missing).",
+                        "Fruitcraft",
+                        MB_ICONERROR,
+                    );
+                    return;
                 }
             }
-            if data_dir.is_none() {
-                return;
-            }
         }
-        if let Some(ref dd) = data_dir {
-            log_line(&format!("data dir = {}", dd.display()), &root);
+        if game_dir.is_none() {
+            return;
         }
     }
+    let game_dir = game_dir.unwrap();
+    log_line(&format!("game dir = {}", game_dir.display()), &root);
 
     // ---- 3) integrity gate: original bytecode must be present, or we stop ----
-    let (lu, where_lu) = match &data_dir {
-        Some(dd) => (count_lu(dd), format!("data dir ({})", dd.display())),
-        None => (root_lu, "app root".to_string()),
-    };
+    let lu = count_lu(&game_dir);
     log_line(
-        &format!("bytecode modules (.lu) in {}: {} (expected 363)", where_lu, lu),
+        &format!(
+            "bytecode modules (.lu) in game dir ({}): {} (expected 363)",
+            game_dir.display(),
+            lu
+        ),
         &root,
     );
     if lu < 100 {
@@ -947,34 +877,22 @@ fn main() {
         return;
     }
 
-    // ---- 4) sync data into the app root (merge: copy missing/changed files, delete nothing) ----
-    if sync_needed {
-        set_status(PREP);
-        let dd = data_dir.as_ref().unwrap();
-        let total = count_files(dd) as i32;
-        COPY_TOTAL.store(total, Ordering::SeqCst);
-        COPY_DONE.store(0, Ordering::SeqCst);
-        PCT.store(0, Ordering::SeqCst);
-        copy_tree(dd, &root);
-        log_line(
-            &format!(
-                "sync done: {} files processed (missing or changed files copied, nothing deleted)",
-                COPY_DONE.load(Ordering::SeqCst)
-            ),
-            &root,
-        );
-        let lu2 = count_lu(&root);
-        log_line(&format!("root .lu count after sync: {}", lu2), &root);
-        if lu2 < 100 {
-            msgbox(
-                "Could not prepare the game files in this folder (still not enough .lu modules after sync).\nTry a different folder (e.g. Documents) with enough free space.",
-                "Fruitcraft",
-                MB_ICONERROR,
-            );
-            return;
+    // ---- 3b) ensure build.settings (landscape + maximized desktop window) ----
+    const BUILD_SETTINGS: &str = "settings = {\n    orientation = {\n        default = \"landscapeLeft\",\n        supported = { \"landscapeLeft\", \"landscapeRight\" },\n    },\n    window = {\n        defaultMode = \"maximized\",\n        titleText = \"Fruitcraft\",\n        resizable = true,\n    },\n    win32 = {\n        singleInstance = false,\n    },\n}\n";
+    for d in [&root, &game_dir] {
+        let p = d.join("build.settings");
+        if !p.is_file() {
+            match fs::write(&p, BUILD_SETTINGS) {
+                Ok(()) => log_line(
+                    &format!("build.settings written to {}", p.display()),
+                    &root,
+                ),
+                Err(e) => log_line(
+                    &format!("could not write {}: {}", p.display(), e),
+                    &root,
+                ),
+            }
         }
-    } else {
-        log_line("root runtime already complete - no sync performed", &root);
     }
 
     // ---- 5) profile selection + per-profile data directories ----
@@ -1049,8 +967,16 @@ fn main() {
         build_env_block(&pdir_appdata.to_string_lossy(), &pdir_local.to_string_lossy());
     let env_ptr = env_block.as_ptr() as *mut c_void; // never written through
 
-    // ---- 6) launch the engine ----
-    set_status(READY);
+    // Close the status window (if any) before the game starts
+    {
+        let hwnd = HWIN.load(Ordering::SeqCst) as HWND;
+        if !hwnd.is_null() {
+            unsafe { DestroyWindow(hwnd) };
+            HWIN.store(0, Ordering::SeqCst);
+        }
+    }
+
+    // ---- 6) launch the engine (working dir = game dir) ----
     let engine_path = root.join("FruitcraftEngine.exe");
     if !engine_path.is_file() {
         msgbox(
@@ -1061,18 +987,14 @@ fn main() {
         return;
     }
     let engine_w = wide(&engine_path.to_string_lossy());
-    let cwd_w = wide(&root.to_string_lossy());
+    let cwd_w = wide(&game_dir.to_string_lossy());
 
     // Pass the bootstrap entry point as an argument so the engine loads
     // it directly instead of popping a file picker. The shell accepts the
     // main-file path as its first argument.
-    let main_lua = root.join("main.lua");
+    let main_lua = game_dir.join("main.lua");
     let main_lua_s = main_lua.to_string_lossy().to_string();
-    let cmdline = if main_lua.is_file() {
-        format!("\"{}\" \"{}\"", engine_path.to_string_lossy(), main_lua_s)
-    } else {
-        format!("\"{}\"", engine_path.to_string_lossy())
-    };
+    let cmdline = format!("\"{}\" \"{}\"", engine_path.to_string_lossy(), main_lua_s);
     log_line(&format!("engine command line: {}", cmdline), &root);
     let mut cmd_w = wide(&cmdline);
 

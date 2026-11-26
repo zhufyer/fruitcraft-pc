@@ -54,6 +54,13 @@ pcall(function()
   end
 end)
 
+-- Force the desktop window to maximized (landscape per build.settings)
+pcall(function()
+  if native and native.setProperty then
+    native.setProperty("windowMode", "maximized")
+  end
+end)
+
 -- Run the original config chunk (SDK settings), like the SDK does
 pcall(function()
   local f = io.open(root .. "/config.lu", "rb")

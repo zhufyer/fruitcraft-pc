@@ -1,0 +1,15 @@
+-- Fruitcraft desktop window settings (Solar2D Win32 format)
+settings = {
+    orientation = {
+        default = "landscapeLeft",
+        supported = { "landscapeLeft", "landscapeRight" },
+    },
+    window = {
+        defaultMode = "maximized",
+        titleText = "Fruitcraft",
+        resizable = true,
+    },
+    win32 = {
+        singleInstance = false,
+    },
+}

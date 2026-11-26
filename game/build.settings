@@ -1,11 +1,15 @@
--- Fruit Craft v1.10.10760 - Desktop build (reconstructed for Solar2D Windows)
+-- Fruitcraft desktop window settings (Solar2D Win32 format)
 settings = {
-    width = 720,
-    height = 1280,
     orientation = {
-        "landscapeLeft",
-        "landscapeRight",
+        default = "landscapeLeft",
+        supported = { "landscapeLeft", "landscapeRight" },
     },
-    contentScale = "auto",
-    preferredFramesPerSecond = 30,
+    window = {
+        defaultMode = "maximized",
+        titleText = "Fruitcraft",
+        resizable = true,
+    },
+    win32 = {
+        singleInstance = false,
+    },
 }
