@@ -755,6 +755,11 @@ fn pick_profile_msgbox() -> i32 {
 
 // ------------------------- Win32 / GDI -------------------------
 type HFONT = *mut c_void;
+
+/// 0xRRGGBB -> COLORREF (0x00BBGGRR)
+fn cref(c: u32) -> u32 {
+    ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF)
+}
 type HBITMAP = *mut c_void;
 
 #[repr(C)]
@@ -1002,22 +1007,44 @@ fn text_w(hdc: HDC, s: &[u16]) -> i32 {
 }
 
 /// align: 0 = left, >0 = centred inside that width, <0 = right edge at |align|
+/// The string is already in VISUAL order, so every glyph is placed by hand:
+/// GDI would otherwise run its own bidi pass over the Arabic-script run and
+/// mirror it back (that was the "reversed text" bug).
 fn draw_text_at(hdc: HDC, s: &[u16], x: i32, y: i32, color: u32, align: i32) {
     if s.is_empty() {
         return;
     }
-    let w = text_w(hdc, s);
+    let mut widths: Vec<i32> = Vec::with_capacity(s.len());
+    let mut total = 0;
+    for &c in s {
+        let mut sz = SIZE2 { cx: 0, cy: 0 };
+        let w = unsafe {
+            if GetTextExtentPoint32W(hdc, &c as *const u16, 1, &mut sz) != 0 {
+                sz.cx
+            } else {
+                0
+            }
+        };
+        widths.push(w);
+        total += w;
+    }
     let px = if align > 0 {
-        x + (align - w) / 2
+        x + (align - total) / 2
     } else if align < 0 {
-        x + (-align) - w
+        x + (-align) - total
     } else {
         x
     };
     unsafe {
         SetBkMode(hdc, TRANSPARENT);
-        SetTextColor(hdc, color & 0x00FF_FFFF);
-        TextOutW(hdc, px, y, s.as_ptr(), s.len() as i32);
+        SetTextColor(hdc, cref(color & 0x00FF_FFFF));
+        let mut cx = px;
+        for (i, &c) in s.iter().enumerate() {
+            if c != 0x20 {
+                TextOutW(hdc, cx, y, &c as *const u16, 1);
+            }
+            cx += widths[i];
+        }
     }
 }
 
@@ -1119,13 +1146,11 @@ fn usp_load() -> Option<Usp> {
     if h.is_null() {
         return None;
     }
-    let get = |p: *mut c_void, ord: usize, name: &str| -> *mut c_void {
-        let mut r = p;
+    // try the name first (Wine / newer Windows), then the ordinal (all Windows builds)
+    let get = |_p: *mut c_void, ord: usize, name: &str| -> *mut c_void {
+        let mut r = unsafe { GetProcAddress(h, wide(name).as_ptr() as *const c_void) };
         if r.is_null() {
             r = unsafe { GetProcAddress(h, ord as *const u16 as *const c_void) };
-        }
-        if r.is_null() {
-            r = unsafe { GetProcAddress(h, wide(name).as_ptr() as *const c_void) };
         }
         r
     };
@@ -1310,10 +1335,14 @@ fn draw_line(us: &Option<Uniscribe>, hdc: HDC, text: &str, x: i32, y: i32, color
 }
 
 fn make_font(face: &str, px: i32, weight: i32) -> HFONT {
+    make_font_cs(face, px, weight, 1) // DEFAULT_CHARSET
+}
+
+fn make_font_cs(face: &str, px: i32, weight: i32, charset: u8) -> HFONT {
     let mut lf: LOGFONTW = unsafe { mem::zeroed() };
     lf.lf_height = -px;
     lf.lf_weight = weight;
-    lf.lf_charset = 178; // ARABIC_CHARSET: makes GDI use the complex-script path
+    lf.lf_charset = charset;
     lf.lf_quality = CLEARTYPE_QUALITY;
     let mut name: Vec<u16> = face.encode_utf16().collect();
     name.truncate(31);
@@ -1345,7 +1374,7 @@ fn round_fill(hdc: HDC, x: i32, y: i32, w: i32, h: i32, r: i32, color: u32, alph
         let b1 = (b0 * a + bb * (100 - a)) / 100;
         (r1 << 16) | (g1 << 8) | b1
     };
-    let b = unsafe { CreateSolidBrush(col) };
+    let b = unsafe { CreateSolidBrush(cref(col)) };
     unsafe {
         let old_b = SelectObject(hdc, b as HGDIOBJ);
         let old_p = SelectObject(hdc, GetStockObject(NULL_PEN));
@@ -1358,7 +1387,7 @@ fn round_fill(hdc: HDC, x: i32, y: i32, w: i32, h: i32, r: i32, color: u32, alph
 }
 
 fn round_stroke(hdc: HDC, x: i32, y: i32, w: i32, h: i32, r: i32, color: u32, width: i32) {
-    let p = unsafe { CreatePen(0, width, color) };
+    let p = unsafe { CreatePen(0, width, cref(color)) };
     unsafe {
         let old_p = SelectObject(hdc, p);
         let old_b = SelectObject(hdc, GetStockObject(NULL_BRUSH));
@@ -1832,6 +1861,8 @@ fn read_png(path: &Path) -> Option<Png> {
 
 /// box-filter resize + (optional) darkening, output 0xAARRGGBB
 fn resize_dark(src: &Png, dw: i32, dh: i32, dark_pct: u32) -> Vec<u32> {
+    // NOTE: alpha is averaged too (premultiplied), otherwise transparent areas
+    // turn into a black box around the game logo.
     let mut out = vec![0u32; (dw * dh) as usize];
     let sx = src.w as f32 / dw as f32;
     let sy = src.h as f32 / dh as f32;
@@ -1841,22 +1872,32 @@ fn resize_dark(src: &Png, dw: i32, dh: i32, dark_pct: u32) -> Vec<u32> {
             let y0 = (y as f32 * sy) as i32;
             let x1 = (((x + 1) as f32 * sx) as i32).clamp(x0 + 1, src.w);
             let y1 = (((y + 1) as f32 * sy) as i32).clamp(y0 + 1, src.h);
-            let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
+            let (mut r, mut g, mut b, mut a, mut n) = (0u32, 0u32, 0u32, 0u32, 0u32);
             for yy in y0..y1 {
                 for xx in x0..x1 {
                     let p = src.px[(yy * src.w + xx) as usize];
-                    r += (p >> 16) & 0xFF;
-                    g += (p >> 8) & 0xFF;
-                    b += p & 0xFF;
+                    let pa = (p >> 24) & 0xFF;
+                    // premultiply so fully transparent pixels do not darken the edges
+                    r += ((p >> 16) & 0xFF) * pa / 255;
+                    g += ((p >> 8) & 0xFF) * pa / 255;
+                    b += (p & 0xFF) * pa / 255;
+                    a += pa;
                     n += 1;
                 }
             }
             let n = n.max(1);
+            let a = a / n;
+            let (r, g, b) = if a > 0 {
+                let un = |v: u32| (v * 255 / a).min(255);
+                (un(r / n), un(g / n), un(b / n))
+            } else {
+                (0, 0, 0)
+            };
             let keep = 100 - dark_pct;
-            let r = (r / n) * keep / 100;
-            let g = (g / n) * keep / 100;
-            let b = (b / n) * keep / 100;
-            out[(y * dw + x) as usize] = 0xFF00_0000 | (r << 16) | (g << 8) | b;
+            let r = r * keep / 100;
+            let g = g * keep / 100;
+            let b = b * keep / 100;
+            out[(y * dw + x) as usize] = (a << 24) | (r << 16) | (g << 8) | b;
         }
     }
     out
@@ -1869,6 +1910,7 @@ struct Fonts {
     name: HFONT,
     btn: HFONT,
     label: HFONT,
+    edit: HFONT, // ARABIC_CHARSET copy for the input box
 }
 
 struct UiState {
@@ -2321,7 +2363,7 @@ unsafe extern "system" fn ui_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                 st.edit = edit;
                 let i = ((st.sel - 1).max(0) as usize).min(3);
                 ui_set_edit(st, &st.names[i]);
-                let f = st.fonts.name;
+                let f = st.fonts.edit;
                 SendMessageW(edit, WM_SETFONT, f as usize, 1);
                 let old = SetWindowLongPtrW(edit, GWLP_WNDPROC, edit_proc as usize as isize);
                 EDIT_OLD_PROC.store(old, Ordering::SeqCst);
@@ -2470,6 +2512,7 @@ fn pick_profile_ui(game_dir: &Path, profiles_root: &Path) -> i32 {
         name: make_font("Dana", font_px(sdc, 12), 400),
         btn: make_font("Dana", font_px(sdc, 14), 700),
         label: make_font("Dana", font_px(sdc, 13), 400),
+        edit: make_font_cs("Dana", font_px(sdc, 13), 400, 178),
     };
     let us = Uniscribe::new(sdc);
     unsafe { ReleaseDC(std::ptr::null_mut(), sdc) };
@@ -2579,6 +2622,7 @@ fn pick_profile_ui(game_dir: &Path, profiles_root: &Path) -> i32 {
             st.fonts.name,
             st.fonts.btn,
             st.fonts.label,
+            st.fonts.edit,
         ] {
             if !f.is_null() {
                 unsafe { DeleteObject(f as HGDIOBJ) };
