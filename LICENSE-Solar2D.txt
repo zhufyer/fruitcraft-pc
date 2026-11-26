@@ -1,0 +1,16 @@
+Fruitcraft-PC ships the Solar2D / Corona SDK runtime
+(engine/Corona.Shell.exe, engine/CoronaLabs.Corona.Native.dll and the DLLs
+next to them, plus engine/Resources/Corona).
+
+Solar2D is Copyright (c) 2009-2026 Corona Labs Inc. and contributors,
+and is distributed under the MIT License, with parts under the GNU GPL
+and other open-source licenses. The runtime is used here unmodified.
+
+  Upstream:  https://solar2d.com  /  https://github.com/coronalabs/corona
+  License:   https://github.com/coronalabs/corona/blob/master/LICENSE
+  MIT text:  https://opensource.org/licenses/MIT
+
+The game content (data/, images, Lua bytecode, fonts) belongs to its
+original authors (Ateam / Fruitcraft). This package contains no code
+decompiled from the game; it runs the game's own bytecode on the
+official runtime.

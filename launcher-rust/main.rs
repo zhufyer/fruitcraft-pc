@@ -236,6 +236,11 @@ const WM_ERASEBKGND: u32 = 0x0014;
 const WM_CLOSE: u32 = 0x0010;
 const WM_DESTROY: u32 = 0x0002;
 const WM_SETTEXT: u32 = 0x000C;
+
+#[link(name = "user32")]
+extern "system" {
+    fn IsZoomed(hWnd: HWND) -> i32;
+}
 const SW_SHOW: i32 = 5;
 const SW_SHOWMAXIMIZED: i32 = 3;
 const MB_ICONERROR: u32 = 0x10;
@@ -2801,6 +2806,26 @@ fn main() {
         }
     }
 
+    // ---- 6) launch the engine (working dir = game dir) ----
+    // Two engines can be shipped:
+    //   engine\Corona.Shell.exe + engine\CoronaLabs.Corona.Native.dll
+    //        = official Solar2D 2026 (used when present, it is the better runtime)
+    //   FruitcraftEngine.exe
+    //        = the original mobile engine, fallback only
+    let modern_engine = root.join("engine").join("Corona.Shell.exe");
+    let legacy_engine = root.join("FruitcraftEngine.exe");
+    let (engine_path, modern) = if modern_engine.is_file() {
+        (modern_engine, true)
+    } else if legacy_engine.is_file() {
+        (legacy_engine, false)
+    } else {
+        msgbox(
+            "No game engine found (engine\\Corona.Shell.exe or FruitcraftEngine.exe).\nKeep the whole folder intact.",
+            "Fruitcraft",
+            MB_ICONERROR,
+        );
+        return;
+    };
     // ---- 5) profile selection + per-profile data directories ----
     let appdata = match get_env("APPDATA") {
         Some(a) => PathBuf::from(a),
@@ -2836,42 +2861,55 @@ fn main() {
     // This engine build stores its documents at %APPDATA%\Fruitcraft\Fruitcraft.
     // Point that node at the chosen profile (junction), so each profile owns
     // its data. Only the junction link is ever removed - never the target.
-    let engine_node = fn_base.join("Fruitcraft");
-    match engine_node.symlink_metadata() {
-        Ok(m) if m.file_type().is_symlink() => {
-            let w = wide(&engine_node.to_string_lossy());
-            unsafe { DeleteFileW(w.as_ptr()) };
+    // (The modern runtime keeps its own store, so it is left alone.)
+    if !modern {
+        let engine_node = fn_base.join("Fruitcraft");
+            match engine_node.symlink_metadata() {
+            Ok(m) if m.file_type().is_symlink() => {
+                let w = wide(&engine_node.to_string_lossy());
+                unsafe { DeleteFileW(w.as_ptr()) };
+            }
+            Ok(m) if m.is_dir() => {
+                copy_tree(&engine_node, &pdir_engine);
+                let w = wide(&engine_node.to_string_lossy());
+                unsafe { RemoveDirectoryW(w.as_ptr()) }; // best effort
+            }
+            _ => {}
         }
-        Ok(m) if m.is_dir() => {
-            copy_tree(&engine_node, &pdir_engine);
-            let w = wide(&engine_node.to_string_lossy());
-            unsafe { RemoveDirectoryW(w.as_ptr()) }; // best effort
-        }
-        _ => {}
-    }
-    make_junction(&engine_node, &pdir_engine);
-    log_line(&format!("engine data node -> {}", pdir_engine.display()), &root);
+        make_junction(&engine_node, &pdir_engine);
+        log_line(&format!("engine data node -> {}", pdir_engine.display()), &root);
 
-    // One-time migration from the legacy Corona path (files already copied
-    // into the profile before the old tree is removed).
-    let legacy = appdata.join("Corona Labs Inc").join("Corona Shell");
-    let legacy_existed = legacy.is_dir();
-    if legacy_existed {
-        log_line("migrating legacy Corona data into selected profile", &root);
-        copy_tree(&legacy, &pdir_engine);
-        remove_tree(&legacy);
-        remove_tree(&appdata.join("Corona Labs Inc"));
-        // If this engine build still writes to the old path, keep it working
-        // (and per-profile) via a junction. The junction link itself is
-        // empty and safe for the user to remove.
-        make_junction(&legacy, &pdir_engine);
-        log_line("legacy Corona data migrated; legacy path re-linked to profile", &root);
+        // One-time migration from the legacy Corona path (files already copied
+        // into the profile before the old tree is removed).
+        let legacy = appdata.join("Corona Labs Inc").join("Corona Shell");
+        let legacy_existed = legacy.is_dir();
+        if legacy_existed {
+            log_line("migrating legacy Corona data into selected profile", &root);
+            copy_tree(&legacy, &pdir_engine);
+            remove_tree(&legacy);
+            remove_tree(&appdata.join("Corona Labs Inc"));
+            // If this engine build still writes to the old path, keep it working
+            // (and per-profile) via a junction. The junction link itself is
+            // empty and safe for the user to remove.
+            make_junction(&legacy, &pdir_engine);
+            log_line("legacy Corona data migrated; legacy path re-linked to profile", &root);
+        }
+
     }
 
     // Per-profile environment: isolates plugin/cache dirs per profile.
-    let env_block =
-        build_env_block(&pdir_appdata.to_string_lossy(), &pdir_local.to_string_lossy());
-    let env_ptr = env_block.as_ptr() as *mut c_void; // never written through
+    // The modern Solar2D runtime resolves its own folders from APPDATA and
+    // faults when that is redirected, so it always gets the plain environment.
+    let env_block = if modern {
+        Vec::new()
+    } else {
+        build_env_block(&pdir_appdata.to_string_lossy(), &pdir_local.to_string_lossy())
+    };
+    let env_ptr = if env_block.is_empty() {
+        std::ptr::null_mut()
+    } else {
+        env_block.as_ptr() as *mut c_void // never written through
+    };
 
     // Close the status window (if any) before the game starts
     {
@@ -2882,18 +2920,22 @@ fn main() {
         }
     }
 
-    // ---- 6) launch the engine (working dir = game dir) ----
-    let engine_path = root.join("FruitcraftEngine.exe");
-    if !engine_path.is_file() {
-        msgbox(
-            "FruitcraftEngine.exe not found. Keep the whole folder intact.",
-            "Fruitcraft",
-            MB_ICONERROR,
-        );
-        return;
-    }
+    log_line(
+        &format!(
+            "engine: {} ({})",
+            engine_path.display(),
+            if modern { "Solar2D 2026" } else { "legacy mobile engine" }
+        ),
+        &root,
+    );
+    // the modern engine keeps its runtime data next to the exe
+    let engine_dir = engine_path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| root.clone());
     let engine_w = wide(&engine_path.to_string_lossy());
-    let cwd_w = wide(&game_dir.to_string_lossy());
+    let cwd_owned = if modern { engine_dir.clone() } else { game_dir.clone() };
+    let cwd_w = wide(&cwd_owned.to_string_lossy());
 
     // Pass the bootstrap entry point as an argument so the engine loads
     // it directly instead of popping a file picker. The shell accepts the
@@ -2931,9 +2973,12 @@ fn main() {
     }
     log_line(&format!("engine launched, pid={}", pi.dwProcessId), &root);
 
-    // ---- 6) wait for the game window (up to ~12 s), then maximize it ----
+    // ---- 6) wait for the game window, then maximize it ----
+    // The engine draws its own full window; we only help it along. Nothing is
+    // forced hard enough to disturb it (a hard maximise on a GL window can fault
+    // inside the engine), and a crash of the engine is reported, not swallowed.
     let mut game_hwnd: HWND = std::ptr::null_mut();
-    for _ in 0..24 {
+    for _ in 0..90 {
         unsafe { Sleep(500) };
         game_hwnd = find_game_window();
         if !game_hwnd.is_null() {
@@ -2944,58 +2989,86 @@ fn main() {
         }
     }
     if !game_hwnd.is_null() {
-        let title_w = wide("Fruitcraft");
         unsafe {
             ShowWindow(game_hwnd, SW_SHOWMAXIMIZED);
             SetForegroundWindow(game_hwnd);
-            // Replace the "Corona Shell" title with the game name.
-            SendMessageW(game_hwnd, WM_SETTEXT, 0, title_w.as_ptr() as LPARAM);
         }
-        log_line("engine window found, maximized, title set to Fruitcraft", &root);
+        log_line("engine window found, maximizing", &root);
+        // After 3 s: grow the window to fill the desktop work area. Solar2D
+        // keeps its own content aspect when the window is resized, and the
+        // game only becomes usable when it is big enough.
+        let mut tries = 0;
+        while tries < 12 {
+            unsafe { Sleep(1500) };
+            let h = find_game_window();
+            if h.is_null() {
+                tries += 1;
+                continue;
+            }
+            if unsafe { IsZoomed(h) } == 0 {
+                unsafe { ShowWindow(h, SW_MAXIMIZE) };
+            }
+            let mut r: RECT = unsafe { mem::zeroed() };
+            if unsafe { GetWindowRect(h, &mut r) } != 0 && (r.right - r.left) >= 900 {
+                log_line(
+                    &format!("engine window {}x{}", r.right - r.left, r.bottom - r.top),
+                    &root,
+                );
+                break;
+            }
+            tries += 1;
+        }
     } else {
-        // no window within 12 s: check what happened
         let mut code: u32 = 0;
-        let exited = unsafe { WaitForSingleObject(pi.hProcess, 3000) } == WAIT_OBJECT_0;
+        let exited = unsafe { WaitForSingleObject(pi.hProcess, 5000) } == WAIT_OBJECT_0;
         if exited {
             unsafe { GetExitCodeProcess(pi.hProcess, &mut code) };
             log_line(&format!("engine exited early, code={}", code), &root);
-            msgbox(
-                "The engine stopped shortly after start.\n\nOpen fruitcraft.log in this folder and send it together with a screenshot of any error window - that is exactly what the next version fixes.\n\nFallback: run FruitcraftEngine.exe and select data\\main.lua.",
-                "Fruitcraft",
-                MB_ICONERROR,
-            );
         } else {
-            log_line("engine still running but no main window found", &root);
-            msgbox(
-                "The engine is running but its window was not found.\nIf an error window is visible, take a screenshot and send it together with fruitcraft.log.\n\nFallback: run FruitcraftEngine.exe and select data\\main.lua.",
-                "Fruitcraft",
-                MB_ICONWARNING,
-            );
+            log_line("engine still running but no window matched yet", &root);
         }
     }
 
-    // ---- 7) keep the game window landscape-fullscreen while it runs ----
+    // ---- 7) keep the engine window titled "Fruitcraft" and landscape-sized ----
+    // The engine re-creates / re-places its own window while it boots, so an
+    // occasional nudge is enough: never fight the renderer (that crashes it).
     let start_tick = unsafe { GetTickCount() };
+    let mut nudges = 0u32;
     loop {
-        if unsafe { WaitForSingleObject(pi.hProcess, 1500) } == WAIT_OBJECT_0 {
+        if unsafe { WaitForSingleObject(pi.hProcess, 2000) } == WAIT_OBJECT_0 {
             break; // engine exited
         }
         if u32::wrapping_sub(unsafe { GetTickCount() }, start_tick) > 12 * 3600 * 1000 {
             break; // safety cap: 12 h
         }
         let h = find_game_window();
-        if h.is_null() {
+        if h.is_null() || nudges > 8 {
             continue;
         }
         let mut wp: WINDOWPLACEMENT = unsafe { mem::zeroed() };
         wp.length = 44;
-        if unsafe { GetWindowPlacement(h, &mut wp) } != 0 && wp.showCmd != SW_MAXIMIZE as u32 {
-            let title_w = wide("Fruitcraft");
-            unsafe {
-                ShowWindow(h, SW_SHOWMAXIMIZED);
-                SetForegroundWindow(h);
-                SendMessageW(h, WM_SETTEXT, 0, title_w.as_ptr() as LPARAM);
+        let mut r: RECT = unsafe { mem::zeroed() };
+        if unsafe { GetWindowPlacement(h, &mut wp) } != 0
+            && unsafe { GetWindowRect(h, &mut r) } != 0
+        {
+            let w = r.right - r.left;
+            let ht = r.bottom - r.top;
+            let portrait = ht > w + 40;
+            if wp.showCmd != SW_MAXIMIZE as u32 && portrait {
+                log_line(
+                    &format!("engine window {}x{} portrait - re-maximizing", w, ht),
+                    &root,
+                );
+                unsafe {
+                    ShowWindow(h, SW_SHOWMAXIMIZED);
+                    SetForegroundWindow(h);
+                }
+                nudges += 1;
             }
+        }
+        let title_w = wide("Fruitcraft");
+        unsafe {
+            SendMessageW(h, WM_SETTEXT, 0, title_w.as_ptr() as LPARAM);
         }
     }
 
