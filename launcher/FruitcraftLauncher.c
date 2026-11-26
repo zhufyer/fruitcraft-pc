@@ -1,9 +1,9 @@
 // ============================================================
 //  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.01b)
-//  Finds data/ (next to exe, then parent dir), links its
-//  contents into the app root (junctions / hardlinks, no
-//  copies), then launches FruitcraftEngine.exe maximized.
-//  If data/ is not found, lets the user browse to it.
+//  Finds and VALIDATES the game data folder (next to exe,
+//  parent dir, or user-picked), links its contents into the
+//  app root (junctions / hardlinks, no copies), then launches
+//  FruitcraftEngine.exe maximized.
 // ============================================================
 #include <windows.h>
 #include <shlobj.h>
@@ -31,6 +31,21 @@ static BOOL IsDir(const wchar_t *p) {
 static BOOL IsFile(const wchar_t *p) {
   DWORD a = GetFileAttributesW(p);
   return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// Resolve a picked/auto dir to the actual data dir:
+//   dir/FCMain.lua            -> dir
+//   dir/gamefiles/FCMain.lua  -> dir/gamefiles   (legacy layout)
+//   dir/data/FCMain.lua       -> dir/data
+static BOOL ResolveDataDir(const wchar_t *dir, wchar_t *out, int outlen) {
+  wchar_t p[MAXP + 64];
+  swprintf(p, MAXP + 64, L"%s\\FCMain.lua", dir);
+  if (IsFile(p)) { lstrcpynW(out, dir, outlen); return TRUE; }
+  swprintf(p, MAXP + 64, L"%s\\gamefiles\\FCMain.lua", dir);
+  if (IsFile(p)) { swprintf(out, outlen, L"%s\\gamefiles", dir); return TRUE; }
+  swprintf(p, MAXP + 64, L"%s\\data\\FCMain.lua", dir);
+  if (IsFile(p)) { swprintf(out, outlen, L"%s\\data", dir); return TRUE; }
+  return FALSE;
 }
 
 static void LinkAll(const wchar_t *exedir, const wchar_t *gf, int *failed) {
@@ -87,45 +102,52 @@ int WINAPI wWinMain(HINSTANCE h, HINSTANCE p, LPWSTR c, int s) {
   wchar_t *sl = wcsrchr(exedir, L'\\');
   if (sl) *sl = 0;
 
-  // 1) find data: next to the exe, then in the parent folder
+  // 1) find + validate data: next to the exe, then in the parent folder
   wchar_t dataDir[MAXP] = L"";
-  wchar_t cand[MAXP + 16];
-  swprintf(cand, MAXP + 16, L"%s\\data", exedir);
-  if (IsDir(cand)) {
-    lstrcpynW(dataDir, cand, MAXP);
-  } else {
-    wchar_t parent[MAXP];
-    lstrcpynW(parent, exedir, MAXP);
-    wchar_t *s2 = wcsrchr(parent, L'\\');
-    if (s2) {
-      *s2 = 0;
-      swprintf(cand, MAXP + 16, L"%s\\data", parent);
-      if (IsDir(cand)) lstrcpynW(dataDir, cand, MAXP);
+  {
+    wchar_t cand[MAXP + 16];
+    swprintf(cand, MAXP + 16, L"%s\\data", exedir);
+    if (IsDir(cand) && ResolveDataDir(cand, dataDir, MAXP)) {
+      // ok
+    } else {
+      wchar_t parent[MAXP];
+      lstrcpynW(parent, exedir, MAXP);
+      wchar_t *s2 = wcsrchr(parent, L'\\');
+      if (s2) {
+        *s2 = 0;
+        swprintf(cand, MAXP + 16, L"%s\\data", parent);
+        if (IsDir(cand) && ResolveDataDir(cand, dataDir, MAXP)) {
+          // ok
+        }
+      }
     }
   }
 
-  // 2) not found -> let the user pick it manually
+  // 2) not found -> let the user pick it manually (also validates)
   if (!dataDir[0]) {
     int r = MessageBoxW(0,
       L"Game data folder was not found next to the launcher.\n\n"
       L"OK: choose the data folder manually\nCancel: exit",
       APP_NAME, MB_ICONERROR | MB_OKCANCEL);
     if (r == IDOK) {
-      if (!BrowseForData(dataDir, MAXP)) return 1;
-      wchar_t probe[MAXP + 32];
-      swprintf(probe, MAXP + 32, L"%s\\FCMain.lua", dataDir);
-      if (!IsFile(probe)) {
-        MessageBoxW(0, L"That folder does not look like game data (FCMain.lua is missing).",
-                    APP_NAME, MB_ICONERROR);
+      wchar_t picked[MAXP] = L"";
+      if (!BrowseForData(picked, MAXP)) return 1;
+      if (!ResolveDataDir(picked, dataDir, MAXP)) {
+        MessageBoxW(0,
+          L"That folder does not look like game data (FCMain.lua is missing).\n"
+          L"Pick the folder that directly contains FCMain.lua "
+          L"(or its gamefiles/ subfolder).",
+          APP_NAME, MB_ICONERROR);
         return 1;
       }
-      wchar_t target[MAXP + 16], cmd[4096];
-      swprintf(target, MAXP + 16, L"%s\\data", exedir);
-      swprintf(cmd, 4096, L"cmd.exe /c mklink /J \"%s\" \"%s\" >NUL 2>&1", target, dataDir);
-      RunHidden(cmd);
-      if (!IsDir(target)) {
-        MessageBoxW(0, L"Could not link the data folder.", APP_NAME, MB_ICONERROR);
-        return 1;
+      // link it next to the launcher for future runs
+      if (lstrcmpiW(dataDir, exedir) != 0) {
+        wchar_t target[MAXP + 16], cmd[4096];
+        swprintf(target, MAXP + 16, L"%s\\data", exedir);
+        if (!IsDir(target)) {
+          swprintf(cmd, 4096, L"cmd.exe /c mklink /J \"%s\" \"%s\" >NUL 2>&1", target, dataDir);
+          RunHidden(cmd);
+        }
       }
     } else {
       return 1;
