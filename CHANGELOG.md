@@ -2,6 +2,32 @@
 
 Versioning: every bug fix ships as a new numbered release + zip asset.
 
+## v0.1.10 — engine migration to Solar2D 2026 (landscape fixed end-to-end)
+
+* Runtime: official Solar2D 2026.3738 `Corona.Shell.exe` + `CoronaLabs.Corona.Native.dll`
+  (64-bit, actively maintained) replaces the old Android-era engine that produced the
+  "scenegraph start lu" crash. Old engine kept in the package only as fallback.
+* Launcher is now engine-aware: prefers `engine/Corona.Shell.exe` (cwd = engine dir),
+  falls back to `FruitcraftEngine.exe`, logs the chosen engine and command line.
+* Nothing is redirected for the modern runtime (a redirected `%APPDATA%` makes it fault);
+  profile junctions + env redirection apply only to the legacy engine.
+* Bug fixes proven by real Wine runs:
+  - `f:read("a")` (Lua 5.2 syntax) -> `read("*a")`
+  - `load(string)` -> `loadstring` (Lua 5.1 engine)
+  - plugin stubs written with `{{ }}` (invalid Lua) -> proper `plugin/*.lua` stubs,
+    so `require "plugin.notifications.v2"` no longer returns nil (`cancelNotification` crash)
+  - `resource.car` removed: the archive carried its own 320x480 SDK config and
+    overrode every window setting, forcing a portrait window
+  - `config.lu` runs again (defines `_serverType`, `_profanityList`, metadata) and the
+    landscape content block is re-applied afterwards
+  - game forced to its native Persian data set (`_mainLang = "fa"`)
+* Window: `config.lua` 960x640, **no** `orientation` key. With an orientation the desktop
+  shell selects a portrait device profile and the window comes up square/rotated.
+  Launcher also verifies the window really grew (1288x808 in the test run).
+* Tested end-to-end: launcher (RTL picker) -> شروع -> landscape splash with the Persian
+  logo -> the game's own loading scene.
+
+
 ## v0.1.03b — 2026-11-26
 - **Full launcher rewrite**: pure Win32 recursive copy of `data/*` into the
   app root — real files, no junctions/hardlinks/cmd.exe (antivirus-safe)
