@@ -1,5 +1,7 @@
 -- Fruit Craft v1.10.10760 - Desktop build (reconstructed for Solar2D Windows)
 settings = {
+    width = 720,
+    height = 1280,
     orientation = {
         "landscapeLeft",
         "landscapeRight",
