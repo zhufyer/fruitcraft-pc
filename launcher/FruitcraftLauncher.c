@@ -1,5 +1,5 @@
 // ============================================================
-//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.01b)
+//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.02b)
 //  Finds and VALIDATES the game data folder (next to exe,
 //  parent dir, or user-picked), links its contents into the
 //  app root (junctions / hardlinks, no copies), then launches
