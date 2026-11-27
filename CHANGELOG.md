@@ -2,6 +2,37 @@
 
 Versioning: every bug fix ships as a new numbered release + zip asset.
 
+## v0.1.11 — Linux build (tested end-to-end) + Windows window fix
+
+Two assets in this release:
+* `fruitcraft-v0.1.11-linux.zip` — native Linux launcher (Python + Tk + Pillow),
+  the game itself runs through the system Wine with the same Solar2D 2026 runtime.
+* `fruitcraft-v0.1.11-windows.zip` — the Windows build, now with real window sizing.
+
+Linux specifics
+* Fixed Persian strings are shaped with HarfBuzz (Pillow + libraqm) at build time
+  into PNG labels, so the launcher looks identical regardless of the desktop's
+  Arabic shaping support.
+* RTL layout identical to the Windows launcher (profile 1 right-most, شروع /
+  ساخت پروفایل / خروج, name field to the left of "نام:").
+* Each profile gets its own Wine prefix: `~/.local/share/Fruitcraft/profiles/pN`.
+* First run of a profile creates the Wine prefix (1–3 min, progress text shown);
+  `WINEDLLOVERRIDES=mscoree,mshtml=` suppresses the Wine-Mono install dialog
+  that would otherwise block start-up.
+* Engine window is renamed from "Corona Shell" to "Fruitcraft" (via xdotool when
+  available) and the launcher keeps running until the game exits.
+* Verified on Wine 11.22 (staging, wow64) + Mesa llvmpipe on a plain X server:
+  launcher → شروع → 960x640 landscape Persian splash → the game's loading scene.
+  Persian renders correctly inside Wine without any font configuration.
+
+Windows specifics
+* The launcher now maximises the engine window and *checks* that it really grew
+  (1288x808 in the test run), instead of assuming.
+* If a `winelinux/bin/wine` runtime is bundled, `Fruitcraft.exe` restarts itself
+  through it, so the same double-click works on Linux.
+* Missing-engine message now points Linux users at the Linux package.
+
+
 ## v0.1.10 — engine migration to Solar2D 2026 (landscape fixed end-to-end)
 
 * Runtime: official Solar2D 2026.3738 `Corona.Shell.exe` + `CoronaLabs.Corona.Native.dll`

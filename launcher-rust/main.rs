@@ -240,6 +240,7 @@ const WM_SETTEXT: u32 = 0x000C;
 #[link(name = "user32")]
 extern "system" {
     fn IsZoomed(hWnd: HWND) -> i32;
+    fn ExitProcess(uExitCode: u32) -> !;
 }
 const SW_SHOW: i32 = 5;
 const SW_SHOWMAXIMIZED: i32 = 3;
@@ -2812,6 +2813,25 @@ fn main() {
     //        = official Solar2D 2026 (used when present, it is the better runtime)
     //   FruitcraftEngine.exe
     //        = the original mobile engine, fallback only
+    // A double-clickable Windows build can also be started under Wine on Linux.
+    // If a runtime is shipped next to the launcher, restart ourselves through it
+    // so a Linux user only ever double-clicks Fruitcraft.exe.
+    if std::env::var_os("FRUITCRAFT_UNDER_WINE").is_none() {
+        let wine = root.join("winelinux").join("bin").join("wine");
+        if wine.is_file() {
+            let exe = std::env::current_exe().unwrap_or_else(|_| root.join("Fruitcraft.exe"));
+            log_line("wine runtime found, restarting the launcher through it", &root);
+            let mut cmd = std::process::Command::new(&wine);
+            cmd.arg(&exe).env("FRUITCRAFT_UNDER_WINE", "1");
+            match cmd.spawn() {
+                Ok(_) => {
+                    unsafe { ExitProcess(0) };
+                }
+                Err(e) => log_line(&format!("wine restart failed: {}", e), &root),
+            }
+        }
+    }
+
     let modern_engine = root.join("engine").join("Corona.Shell.exe");
     let legacy_engine = root.join("FruitcraftEngine.exe");
     let (engine_path, modern) = if modern_engine.is_file() {
@@ -2820,7 +2840,7 @@ fn main() {
         (legacy_engine, false)
     } else {
         msgbox(
-            "No game engine found (engine\\Corona.Shell.exe or FruitcraftEngine.exe).\nKeep the whole folder intact.",
+            "No Windows game engine was found in this folder.\n\nIf you are on Linux: unpack fruitcraft-v0.1.11-linux.zip from the same release, it runs the game natively through the system Wine.\n\nOn Windows: keep the whole folder intact (engine\\Corona.Shell.exe must exist).",
             "Fruitcraft",
             MB_ICONERROR,
         );

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Fruitcraft - PC (Linux) launcher
+# Starts the Tk launcher next to this script.
+set -u
+DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+cd "$DIR" || exit 1
+
+PY=${PYTHON:-python3}
+if ! command -v "$PY" >/dev/null 2>&1; then
+  echo "python3 not found. Install it:  sudo apt install python3" >&2
+  read -r -p "Press Enter to close..." _ || true
+  exit 1
+fi
+
+# Tkinter / Pillow check with a friendly hint instead of a traceback
+"$PY" - <<'PYCHECK' || {
+import sys
+missing = []
+try:
+    import tkinter  # noqa: F401
+except Exception:
+    missing.append("python3-tk")
+try:
+    import PIL  # noqa: F401
+except Exception:
+    missing.append("python3-pil")
+if missing:
+    sys.stderr.write("Missing packages: %s\n" % ", ".join(missing))
+    sys.stderr.write("  sudo apt install %s\n" % " ".join(missing))
+    sys.exit(1)
+PYCHECK
+  echo "Press Enter to close..." >&2
+  read -r _ || true
+  exit 1
+}
+
+exec "$PY" "$DIR/fruitcraft.py" "$@"
