@@ -9,14 +9,32 @@ developers themselves ship on Windows.
 > © TOD Studio — see [NOTICE.md](NOTICE.md).
 > Runtime licence: [LICENSE-Solar2D.txt](LICENSE-Solar2D.txt).
 
-## ⬇ Download (latest: v0.1.11)
+## ⬇ Download (latest: v0.1.12)
 
 | Platform | File | What it is |
 |---|---|---|
-| **Windows 10/11 (64-bit)** | [fruitcraft-v0.1.11-windows.zip](https://github.com/zhufyer/fruitcraft-pc/releases/download/v0.1.11/fruitcraft-v0.1.11-windows.zip) | `Fruitcraft.exe` launcher + Solar2D 2026 runtime. Extract, double-click, play. |
-| **Linux** | [fruitcraft-v0.1.11-linux.zip](https://github.com/zhufyer/fruitcraft-pc/releases/download/v0.1.11/fruitcraft-v0.1.11-linux.zip) | Native launcher (Python + Tk), game runs through your system **Wine**. |
+| **Windows 10/11 (64-bit)** | [fruitcraft-v0.1.12-windows.zip](https://github.com/zhufyer/fruitcraft-pc/releases/download/v0.1.12/fruitcraft-v0.1.12-windows.zip) | `Fruitcraft.exe` launcher + Solar2D 2026 runtime. Extract, double-click, play. |
+| **Linux** | [fruitcraft-v0.1.12-linux.zip](https://github.com/zhufyer/fruitcraft-pc/releases/download/v0.1.12/fruitcraft-v0.1.12-linux.zip) | Native launcher (Python + Tk), game runs through your system **Wine**. |
 
 All releases: [Releases page](https://github.com/zhufyer/fruitcraft-pc/releases).
+
+## ⚠ This game is online-only
+
+On start the game loads the player from **`https://iran.fruitcraft.ir/player/load`**.
+If that host is unreachable from your machine — no internet, or a VPN/proxy that
+routes traffic away from Iran — the loading scene never finishes and the window
+stays black and marked *Not Responding*. **That is the game's own behaviour, not
+a crash of the port.**
+
+Since v0.1.12 the launcher probes the server (TCP + TLS) before launching the
+engine and tells you in Persian when it cannot reach it, instead of opening a
+window that is doomed to hang. If the game window ever stays black, send these
+two files from the folder next to `Fruitcraft.exe`:
+
+| File | Written by |
+|---|---|
+| `fruitcraft.log` | the launcher (window placement, engine exit code, network probe) |
+| `fruitcraft-engine.log` | the game bootstrap (`player/load` results, runtime errors, stage watchdog) |
 
 ## Run — Windows
 
@@ -26,8 +44,18 @@ All releases: [Releases page](https://github.com/zhufyer/fruitcraft-pc/releases)
    four profiles (RTL, profile 1 right-most), **شروع / ساخت پروفایل / خروج**,
    and a name field. Press **شروع** (or Enter) and the game starts in landscape.
 
-Per-profile data: `%APPDATA%\Fruitcraft\profiles\pN`. Launcher log:
-`fruitcraft.log` next to the exe.
+Per-profile data: `%APPDATA%\Fruitcraft\profiles\pN`. Logs next to the exe:
+`fruitcraft.log` (launcher) and `fruitcraft-engine.log` (game).
+
+## Screenshots
+
+| Launcher (v0.1.12, Windows) | Server unreachable → Persian message |
+|---|---|
+| ![launcher](docs/shots/windows-launcher-v012.png) | ![precheck](docs/shots/windows-precheck-v012.png) |
+
+| In game, Persian, landscape |
+|---|
+| ![game](docs/shots/windows-game-v011.png) |
 
 ## Run — Linux
 
