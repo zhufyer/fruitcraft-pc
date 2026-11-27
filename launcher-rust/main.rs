@@ -1,5 +1,5 @@
 // ============================================================
-//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.09c, Rust)
+//  Fruitcraft.exe - Fruitcraft PC launcher (v0.1.12, Rust)
 //  Zero dependencies (raw Win32 FFI), built for x86_64-pc-windows-gnu.
 //
 //  * strips the "Mark of the Web" (Zone.Identifier ADS) from
@@ -138,6 +138,14 @@ struct BROWSEINFOW {
     iImage: i32,
 }
 
+const SOCK_STREAM: i32 = 1;
+
+type HOOKPROC = Option<unsafe extern "system" fn(i32, usize, isize) -> isize>;
+
+const WH_CBT: i32 = 5;
+const HCBT_ACTIVATE: i32 = 5;
+const MB_TOPMOST: u32 = 0x0004_0000;
+
 extern "system" {
     fn GetModuleHandleW(name: LPCWSTR) -> HINSTANCE;
     fn GetModuleFileNameW(m: HINSTANCE, b: LPWSTR, n: i32) -> i32;
@@ -189,6 +197,7 @@ extern "system" {
     fn SendMessageW(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT;
     fn IsWindowVisible(h: HWND) -> BOOL;
     fn SetForegroundWindow(h: HWND) -> BOOL;
+    fn GetStdHandle(nStdHandle: u32) -> HANDLE;
     fn CreateProcessW(
         app: LPCWSTR,
         cmd: LPWSTR,
@@ -236,10 +245,48 @@ const WM_ERASEBKGND: u32 = 0x0014;
 const WM_CLOSE: u32 = 0x0010;
 const WM_DESTROY: u32 = 0x0002;
 const WM_SETTEXT: u32 = 0x000C;
+const PM_REMOVE: u32 = 0x0001;
+const WM_NULL: u32 = 0x0000;
+const SW_HIDE: i32 = 0;
+const SMTO_ABORTIFHUNG: u32 = 0x0002;
+const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
+const SPI_GETWORKAREA: u32 = 0x0030;
+const SWP_NOZORDER: u32 = 0x0004;
+const SWP_NOOWNERZORDER: u32 = 0x0200;
+const SWP_FRAMECHANGED: u32 = 0x0020;
+const STD_INPUT_HANDLE: u32 = 0xFFFF_FFF6; // -10 as DWORD
+const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5; // -11
+const STD_ERROR_HANDLE: u32 = 0xFFFF_FFF4; // -12
 
 #[link(name = "user32")]
 extern "system" {
     fn IsZoomed(hWnd: HWND) -> i32;
+    fn SetWindowPos(
+        hWnd: HWND,
+        hWndInsertAfter: HWND,
+        X: i32,
+        Y: i32,
+        cx: i32,
+        cy: i32,
+        uFlags: u32,
+    ) -> i32;
+    fn SendMessageTimeoutW(
+        hWnd: HWND,
+        Msg: u32,
+        wParam: usize,
+        lParam: isize,
+        fuFlags: u32,
+        uTimeout: u32,
+        lpdwResult: *mut usize,
+    ) -> isize;
+    fn PeekMessageW(
+        lpMsg: *mut MSG,
+        hWnd: HWND,
+        wMsgFilterMin: u32,
+        wMsgFilterMax: u32,
+        wRemoveMsg: u32,
+    ) -> i32;
+    fn TranslateMessage(lpMsg: *const MSG) -> i32;
     fn ExitProcess(uExitCode: u32) -> !;
 }
 const SW_SHOW: i32 = 5;
@@ -262,7 +309,6 @@ const IDOK: i32 = 1;
 const DT_LEFT: u32 = 0x0000;
 const DT_VCENTER: u32 = 0x0004;
 const DT_WORDBREAK: u32 = 0x0010;
-const SPI_GETWORKAREA: u32 = 0x0030;
 const BIF_RETURNONLYFSDIRS: u32 = 0x1;
 const BIF_NEWDIALOGSTYLE: u32 = 0x40;
 const FILE_ATTRIBUTE_DIRECTORY: DWORD = 0x10;
@@ -622,7 +668,7 @@ fn remove_tree(p: &Path) {
 
 // Child-process environment: current env with APPDATA / LOCALAPPDATA
 // redirected into the selected profile folder.
-fn build_env_block(appdata: &str, local: &str) -> Vec<u16> {
+fn build_env_block(appdata: &str, local: &str, extra: &[(String, String)]) -> Vec<u16> {
     let mut v: Vec<u16> = Vec::new();
     unsafe {
         let block = GetEnvironmentStringsW();
@@ -657,8 +703,18 @@ fn build_env_block(appdata: &str, local: &str) -> Vec<u16> {
         out.extend_from_slice(&e);
         out.push(0);
     }
-    for kv in [format!("APPDATA={}", appdata), format!("LOCALAPPDATA={}", local)] {
-        out.extend(kv.encode_utf16());
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    if !appdata.is_empty() {
+        pairs.push(("APPDATA".to_string(), appdata.to_string()));
+    }
+    if !local.is_empty() {
+        pairs.push(("LOCALAPPDATA".to_string(), local.to_string()));
+    }
+    for (k, v) in extra {
+        pairs.push((k.clone(), v.clone()));
+    }
+    for (k, v) in pairs {
+        out.extend(format!("{}={}", k, v).encode_utf16());
         out.push(0);
     }
     out.push(0); // block terminator
@@ -698,7 +754,7 @@ fn write_last_profile(n: i32) {
 // No = next profile, Cancel = exit.
 
 // ==================================================================
-//  Fruitcraft launcher UI  (v0.1.09c)
+//  Fruitcraft launcher UI  (v0.1.12)
 //
 //  * no GDI+ and no extra import libraries - pure user32/gdi32
 //  * PNG images are decoded here (stored-deflate inflater) and shown
@@ -759,6 +815,36 @@ fn pick_profile_msgbox() -> i32 {
     }
 }
 
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentThreadId() -> u32;
+}
+
+#[link(name = "ws2_32")]
+extern "system" {
+    fn WSAStartup(v: u16, d: *mut c_void) -> i32;
+    fn WSACleanup() -> i32;
+    fn GetAddrInfoW(node: LPCWSTR, service: LPCWSTR, hints: *const ADDRINFOW, res: *mut *mut ADDRINFOW) -> i32;
+    fn FreeAddrInfoW(res: *mut ADDRINFOW);
+    fn socket(af: i32, ty: i32, proto: i32) -> usize;
+    fn connect(s: usize, name: *const SOCKADDR, len: i32) -> i32;
+    fn closesocket(s: usize) -> i32;
+    fn setsockopt(s: usize, level: i32, opt: i32, val: *const i8, len: i32) -> i32;
+    fn ioctlsocket(s: usize, cmd: i32, argp: *mut u32) -> i32;
+    fn select(nfds: i32, rd: *mut FdSet, wr: *mut FdSet, ex: *mut FdSet, tv: *mut Timeval) -> i32;
+    fn send(s: usize, buf: *const i8, len: i32, flags: i32) -> i32;
+    fn recv(s: usize, buf: *mut i8, len: i32, flags: i32) -> i32;
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn SetWindowsHookExW(idHook: i32, fn_: HOOKPROC, hMod: HANDLE, tid: u32) -> HANDLE;
+    fn UnhookWindowsHookEx(h: HANDLE) -> i32;
+    fn CallNextHookEx(h: HANDLE, code: i32, w: usize, l: isize) -> isize;
+    fn GetDlgItem(hDlg: HWND, id: i32) -> HWND;
+}
+
 // ------------------------- Win32 / GDI -------------------------
 type HFONT = *mut c_void;
 
@@ -767,6 +853,36 @@ fn cref(c: u32) -> u32 {
     ((c & 0xFF) << 16) | (c & 0xFF00) | ((c >> 16) & 0xFF)
 }
 type HBITMAP = *mut c_void;
+
+#[repr(C)]
+struct ADDRINFOW {
+    ai_flags: i32,
+    ai_family: i32,
+    ai_socktype: i32,
+    ai_protocol: i32,
+    ai_addrlen: usize,
+    ai_canonname: *mut u16,
+    ai_addr: *mut SOCKADDR,
+    ai_next: *mut ADDRINFOW,
+}
+
+#[repr(C)]
+struct SOCKADDR {
+    sa_family: u16,
+    sa_data: [u8; 14],
+}
+
+#[repr(C)]
+struct FdSet {
+    fd_count: u32,
+    fd_array: [usize; 64],
+}
+
+#[repr(C)]
+struct Timeval {
+    tv_sec: i32,
+    tv_usec: i32,
+}
 
 #[repr(C)]
 struct LOGFONTW {
@@ -875,8 +991,12 @@ const BTN_Y: i32 = 316;
 const BTN_H: i32 = 58;
 const NAME_Y: i32 = 384;
 const NAME_H: i32 = 26;
-const EDIT_X: i32 = 170;
-const EDIT_W: i32 = 470;
+// RTL row: label left of the box, box right-most, row centred in the window.
+//   label  (UI_W-46-32) .. (UI_W-46)   |  box  UI_W-46-330 .. UI_W-46
+const EDIT_W: i32 = 330;
+const EDIT_X: i32 = UI_W - 46 - EDIT_W;
+const LABEL_W: i32 = 32;
+const LABEL_X: i32 = EDIT_X - 12 - LABEL_W;
 const ES_RIGHT: u32 = 0x0002;
 const ES_AUTOHSCROLL: u32 = 0x0008;
 const WS_BORDER: u32 = 0x0080_0000;
@@ -2187,13 +2307,13 @@ fn paint_ui(st: &UiState, hdc: HDC) {
         draw_line(us, dc, label, bx, ty, 0xFFFFFF, bw);
     }
 
-    // name box frame + label (label on the LEFT of the box: RTL reading order)
+    // name row, RTL:  [نام:] [ edit box ]  - the box sits on the right, the
+    // label immediately to its left, and the whole row is centred.
     round_fill(dc, EDIT_X - 6, NAME_Y - 6, EDIT_W + 12, NAME_H + 12, 10, 0x1A2430, 100);
     unsafe {
         SelectObject(dc, st.fonts.label as HGDIOBJ);
     }
-    // "نام:" right after the edit box
-    draw_line(us, dc, "نام:", 6, NAME_Y - 2, 0xE8F0F5, 150);
+    draw_line(us, dc, "نام:", LABEL_X, NAME_Y - 2, 0xE8F0F5, LABEL_W);
 
     // blit
     unsafe {
@@ -2456,6 +2576,138 @@ unsafe extern "system" fn ui_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
     }
 }
 
+
+// ------------------------- Persian-capable alert -------------------------
+// MessageBoxW renders Persian right-to-left only with a font that has Arabic
+// glyphs; the default GUI font does not. Set a private font on the box.
+static ALERT_FONT: Mutex<isize> = Mutex::new(0);
+
+fn alert_box(text: &str, caption: &str, flags: u32) {
+    unsafe {
+        if ALERT_FONT.lock().unwrap().clone() == 0 {
+            let mut lf: LOGFONTW = mem::zeroed();
+            let face = wide("Tahoma");
+            for (i, c) in face.iter().take(31).enumerate() {
+                lf.lf_facename[i] = *c;
+            }
+            lf.lf_height = -14; // ~ 14 px, readable on 1366x768
+            lf.lf_charset = 0; // DEFAULT_CHARSET -> Tahoma/Arabic fallback
+            let f = CreateFontIndirectW(&lf);
+            *ALERT_FONT.lock().unwrap() = f as isize;
+        }
+        // Install hook, show box, remove hook.
+        let hook = SetWindowsHookExW(WH_CBT, Some(cbt_proc), std::ptr::null_mut(), GetCurrentThreadId());
+        let t = wide(text);
+        let c = wide(caption);
+        MessageBoxW(std::ptr::null_mut(), t.as_ptr(), c.as_ptr(), flags | MB_TOPMOST);
+        if !hook.is_null() {
+            UnhookWindowsHookEx(hook);
+        }
+    }
+}
+
+unsafe extern "system" fn cbt_proc(code: i32, w: usize, l: isize) -> isize {
+    if code == HCBT_ACTIVATE {
+        let font = *ALERT_FONT.lock().unwrap() as HANDLE;
+        if !font.is_null() {
+            // Persian button captions - an English "OK" would be a bug report
+            for (id, label) in [(0i32, "باشه"), (1i32, "لغو"), (2i32, "لغو"), (6i32, "بله"), (7i32, "نه")] {
+                let ctl = GetDlgItem(w as HWND, id);
+                if !ctl.is_null() {
+                    SendMessageW(ctl, WM_SETFONT, font as usize, 1);
+                    let lw = wide(label);
+                    SetWindowTextW(ctl, lw.as_ptr());
+                }
+            }
+            // 0xFFFF is the static text control of a MessageBox
+            let ctl = GetDlgItem(w as HWND, 0xFFFF);
+            if !ctl.is_null() {
+                SendMessageW(ctl, WM_SETFONT, font as usize, 1);
+            }
+        }
+    }
+    CallNextHookEx(std::ptr::null_mut(), code, w, l)
+}
+
+// ------------------------- network precheck -------------------------
+// The game is an online client: it loads the player from
+// https://iran.fruitcraft.ir/player/load and never leaves the loading scene
+// when that host cannot be reached. Failing fast with a clear message is far
+// better than a frozen black window.
+fn host_reachable(host: &str, port: u16, timeout_ms: u32) -> bool {
+    // A TCP connect alone proves nothing on the Iranian hosts this game uses:
+    // the TLS handshake stalls there. Send a ClientHello and wait for the
+    // server to answer, then measure how long the whole thing took.
+    unsafe {
+        let wsa = WSAStartup(0x0202, &mut mem::zeroed());
+        if wsa != 0 {
+            return true; // cannot tell - do not block the user
+        }
+        let mut hints: ADDRINFOW = mem::zeroed();
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_family = 2; // AF_INET
+        let mut res: *mut ADDRINFOW = std::ptr::null_mut();
+        let host_w = wide(host);
+        let rc = GetAddrInfoW(host_w.as_ptr(), std::ptr::null(), &hints, &mut res);
+        if rc != 0 || res.is_null() {
+            WSACleanup();
+            return false;
+        }
+        let mut addr: *mut SOCKADDR = (*res).ai_addr;
+        let mut addr_len = (*res).ai_addrlen as i32;
+        let mut ok = false;
+        while !addr.is_null() {
+            let s = socket((*res).ai_family, (*res).ai_socktype, (*res).ai_protocol);
+            if s != usize::MAX as usize {
+                // non-blocking connect
+                let mut mode: u32 = 1;
+                ioctlsocket(s, 0x8004_666E_u32 as i32 /*FIONBIO*/, &mut mode);
+                let _ = connect(s, addr, addr_len);
+                let mut wfd: FdSet = mem::zeroed();
+                wfd.fd_count = 1;
+                wfd.fd_array[0] = s;
+                let mut tv = Timeval { tv_sec: (timeout_ms / 1000) as i32, tv_usec: 0 };
+                let sel = select(0, std::ptr::null_mut(), &mut wfd, std::ptr::null_mut(), &mut tv);
+                if sel > 0 {
+                    // now the TLS hello: 0x16 0x03 0x01 + length + handshake
+                    let hello: [u8; 11] = [
+                        0x16, 0x03, 0x01, 0x00, 0x2f, // record: handshake, TLS1.0, 47 bytes
+                        0x01, 0x00, 0x00, 0x2b, 0x03, 0x03,
+                    ];
+                    let sent = send(s, hello.as_ptr() as *const i8, hello.len() as i32, 0);
+                    if sent > 0 {
+                        let mut rfd: FdSet = mem::zeroed();
+                        rfd.fd_count = 1;
+                        rfd.fd_array[0] = s;
+                        let mut tv2 = Timeval { tv_sec: (timeout_ms / 1000) as i32, tv_usec: 0 };
+                        let r = select(0, &mut rfd, std::ptr::null_mut(), std::ptr::null_mut(), &mut tv2);
+                        if r > 0 {
+                            let mut buf = [0u8; 8];
+                            let n = recv(s, buf.as_mut_ptr() as *mut i8, buf.len() as i32, 0);
+                            // any TLS record (0x15 alert / 0x16 handshake) means the
+                            // server is alive and talking to us
+                            ok = n > 0 && (buf[0] == 0x15 || buf[0] == 0x16 || buf[0] == 0x17);
+                        }
+                    }
+                }
+                closesocket(s);
+                if ok {
+                    break;
+                }
+            }
+            addr = (*res).ai_next as *mut SOCKADDR;
+            if (*res).ai_next.is_null() {
+                break;
+            }
+            addr_len = (*res).ai_next.as_ref().map(|n| n.ai_addrlen as i32).unwrap_or(8);
+            addr = (*res).ai_next.as_ref().map(|n| n.ai_addr).unwrap_or(std::ptr::null_mut());
+        }
+        FreeAddrInfoW(res);
+        WSACleanup();
+        ok
+    }
+}
+
 // ------------------------- window entry point -------------------------
 fn pick_profile_ui(game_dir: &Path, profiles_root: &Path) -> i32 {
     let mut names: [String; 4] = Default::default();
@@ -2662,7 +2914,7 @@ fn main() {
     *ROOT.lock().unwrap() = root.to_string_lossy().to_string();
     log_line(
         &format!(
-            "Fruitcraft launcher v0.1.09c (rust) starting; root={}",
+            "Fruitcraft launcher v0.1.12 (rust) starting; root={}",
             root.display()
         ),
         &root,
@@ -2867,12 +3119,29 @@ fn main() {
         ensure_dir(&p.join("local"));
     }
     log_line("showing profile picker", &root);
+    loop {
     let profile = pick_profile_ui(&game_dir, &profiles_root);
     if profile == 0 {
         log_line("no profile selected - exiting", &root);
-        return;
+        break;
     }
     log_line(&format!("profile {} selected", profile), &root);
+    // ---- after the picker: the game needs its server ----
+    {
+        let online = host_reachable("iran.fruitcraft.ir", 443, 4000);
+        log_line(&format!("network precheck iran.fruitcraft.ir:443 reachable={}", online), &root);
+        if !online {
+            alert_box(
+                "بازی به سرور اصلی خودش وصل نمی‌شود.\n\n                 آدرس سرور: iran.fruitcraft.ir\n\n                 بدون اتصال، بازی داخل صفحهٔ بارگذاری می‌ماند (همان پنجرهٔ سیاه).\n\n                 اینترنت (و اگر روشن است، فیلترشکن) را بررسی کن و دوباره شروع کن.\n                 پوشهٔ بازی هیچ فایلی را روی سیستم نصب یا پراکنده نمی‌کند.",
+                "Fruitcraft - اتصال به سرور",
+                MB_ICONWARNING,
+            );
+            log_line("server unreachable - back to the picker", &root);
+            continue;
+        }
+    }
+
+
     let pdir = profiles_root.join(format!("p{}", profile));
     let pdir_engine = pdir.join("engine");
     let pdir_appdata = pdir.join("appdata");
@@ -2920,23 +3189,42 @@ fn main() {
     // Per-profile environment: isolates plugin/cache dirs per profile.
     // The modern Solar2D runtime resolves its own folders from APPDATA and
     // faults when that is redirected, so it always gets the plain environment.
+    // FRUITCRAFT_LOGDIR is passed in both cases: the game writes its
+    // fruitcraft-engine.log straight into the game folder, next to Fruitcraft.exe.
+    let extra_env: Vec<(String, String)> =
+        vec![("FRUITCRAFT_LOGDIR".to_string(), root.to_string_lossy().to_string())];
     let env_block = if modern {
-        Vec::new()
+        build_env_block("", "", &extra_env)
     } else {
-        build_env_block(&pdir_appdata.to_string_lossy(), &pdir_local.to_string_lossy())
+        build_env_block(
+            &pdir_appdata.to_string_lossy(),
+            &pdir_local.to_string_lossy(),
+            &extra_env,
+        )
     };
-    let env_ptr = if env_block.is_empty() {
-        std::ptr::null_mut()
-    } else {
+    let env_ptr = {
         env_block.as_ptr() as *mut c_void // never written through
     };
 
-    // Close the status window (if any) before the game starts
+    // Close the picker window before the game starts: two GL/owner windows on
+    // screen can make the engine's first frame come up black on some drivers.
     {
         let hwnd = HWIN.load(Ordering::SeqCst) as HWND;
         if !hwnd.is_null() {
-            unsafe { DestroyWindow(hwnd) };
+            unsafe {
+                ShowWindow(hwnd, SW_HIDE);
+                DestroyWindow(hwnd);
+            }
             HWIN.store(0, Ordering::SeqCst);
+        }
+        // let the desktop process the destruction before the engine maps its window
+        let mut msg: MSG = unsafe { mem::zeroed() };
+        unsafe {
+            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+            Sleep(250);
         }
     }
 
@@ -2966,8 +3254,12 @@ fn main() {
     log_line(&format!("engine command line: {}", cmdline), &root);
     let mut cmd_w = wide(&cmdline);
 
+    // The engine must inherit a child console, NOT the launcher's own handles:
+    // a Windows GUI parent has no console at all, and inheriting NULL std
+    // handles makes the runtime's output path fault - the black window.
     let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
     si.cb = mem::size_of::<STARTUPINFOW>() as u32;
+    let _ = si.dwFlags; // no handle redirection: the engine manages its own
     let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
     let ok = unsafe {
         CreateProcessW(
@@ -2976,7 +3268,7 @@ fn main() {
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             0,
-            0,
+            CREATE_NO_WINDOW,
             env_ptr,
             cwd_w.as_ptr(),
             &si,
@@ -2993,10 +3285,10 @@ fn main() {
     }
     log_line(&format!("engine launched, pid={}", pi.dwProcessId), &root);
 
-    // ---- 6) wait for the game window, then maximize it ----
-    // The engine draws its own full window; we only help it along. Nothing is
-    // forced hard enough to disturb it (a hard maximise on a GL window can fault
-    // inside the engine), and a crash of the engine is reported, not swallowed.
+    // ---- 6) wait for the engine window, then make it big ----
+    // The engine draws its own window; we only help it. A hard maximise of a
+    // fresh GL window can fault inside some drivers, so the window is resized
+    // to the desktop work area instead (Solar2D scales its content to fit).
     let mut game_hwnd: HWND = std::ptr::null_mut();
     for _ in 0..90 {
         unsafe { Sleep(500) };
@@ -3009,35 +3301,28 @@ fn main() {
         }
     }
     if !game_hwnd.is_null() {
+        let mut wa: RECT = unsafe { mem::zeroed() };
+        unsafe { SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut RECT as *mut c_void, 0) };
+        let (mut wa_w, mut wa_h) = (wa.right - wa.left, wa.bottom - wa.top);
+        if wa_w < 640 {
+            wa_w = 1280;
+        }
+        if wa_h < 480 {
+            wa_h = 720;
+        }
         unsafe {
-            ShowWindow(game_hwnd, SW_SHOWMAXIMIZED);
+            SetWindowPos(
+                game_hwnd,
+                std::ptr::null_mut(),
+                wa.left,
+                wa.top,
+                wa_w,
+                wa_h,
+                SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+            );
             SetForegroundWindow(game_hwnd);
         }
-        log_line("engine window found, maximizing", &root);
-        // After 3 s: grow the window to fill the desktop work area. Solar2D
-        // keeps its own content aspect when the window is resized, and the
-        // game only becomes usable when it is big enough.
-        let mut tries = 0;
-        while tries < 12 {
-            unsafe { Sleep(1500) };
-            let h = find_game_window();
-            if h.is_null() {
-                tries += 1;
-                continue;
-            }
-            if unsafe { IsZoomed(h) } == 0 {
-                unsafe { ShowWindow(h, SW_MAXIMIZE) };
-            }
-            let mut r: RECT = unsafe { mem::zeroed() };
-            if unsafe { GetWindowRect(h, &mut r) } != 0 && (r.right - r.left) >= 900 {
-                log_line(
-                    &format!("engine window {}x{}", r.right - r.left, r.bottom - r.top),
-                    &root,
-                );
-                break;
-            }
-            tries += 1;
-        }
+        log_line(&format!("engine window placed {}x{}", wa_w, wa_h), &root);
     } else {
         let mut code: u32 = 0;
         let exited = unsafe { WaitForSingleObject(pi.hProcess, 5000) } == WAIT_OBJECT_0;
@@ -3049,43 +3334,102 @@ fn main() {
         }
     }
 
-    // ---- 7) keep the engine window titled "Fruitcraft" and landscape-sized ----
-    // The engine re-creates / re-places its own window while it boots, so an
-    // occasional nudge is enough: never fight the renderer (that crashes it).
+    // ---- 7) supervise the game window ----
+    // Real Windows: the engine can take a while to open its GL window, can come
+    // up titled "Corona Shell", and - if the game itself throws before showing a
+    // scene - can sit on a black, non-responding window. All three are handled
+    // here, and everything relevant is written to fruitcraft.log so a stuck run
+    // can be diagnosed instead of guessed at.
     let start_tick = unsafe { GetTickCount() };
     let mut nudges = 0u32;
+    let mut reported_no_window = false;
+    let mut hung_ticks = 0u32;
+    let mut reported_hung = false;
     loop {
         if unsafe { WaitForSingleObject(pi.hProcess, 2000) } == WAIT_OBJECT_0 {
-            break; // engine exited
+            let mut code: u32 = 0;
+            unsafe { GetExitCodeProcess(pi.hProcess, &mut code) };
+            log_line(&format!("engine exited, code={}", code), &root);
+            let ran = u32::wrapping_sub(unsafe { GetTickCount() }, start_tick);
+            if code != 0 && ran < 30_000 {
+                alert_box(
+                    "بازی غیرمنتظره بسته شد.\n\n                     دو فایل کنار Fruitcraft.exe هست: fruitcraft.log و fruitcraft-engine.log\n                     همان‌ها را بفرست تا علت دقیق مشخص شود.\n\n                     اگر در لاگ از کارت گرافیک یا OpenGL حرفی بود، درایور گرافیک را به‌روز کن.",
+                    "Fruitcraft - خطای اجرا",
+                    MB_ICONERROR,
+                );
+            }
+            break;
         }
-        if u32::wrapping_sub(unsafe { GetTickCount() }, start_tick) > 12 * 3600 * 1000 {
+        let elapsed = u32::wrapping_sub(unsafe { GetTickCount() }, start_tick);
+        if elapsed > 12 * 3600 * 1000 {
             break; // safety cap: 12 h
         }
+
         let h = find_game_window();
-        if h.is_null() || nudges > 8 {
+        if h.is_null() {
+            if !reported_no_window && elapsed > 45_000 {
+                reported_no_window = true;
+                log_line("no engine window after 45 s", &root);
+            }
             continue;
         }
-        let mut wp: WINDOWPLACEMENT = unsafe { mem::zeroed() };
-        wp.length = 44;
-        let mut r: RECT = unsafe { mem::zeroed() };
-        if unsafe { GetWindowPlacement(h, &mut wp) } != 0
-            && unsafe { GetWindowRect(h, &mut r) } != 0
-        {
-            let w = r.right - r.left;
-            let ht = r.bottom - r.top;
-            let portrait = ht > w + 40;
-            if wp.showCmd != SW_MAXIMIZE as u32 && portrait {
-                log_line(
-                    &format!("engine window {}x{} portrait - re-maximizing", w, ht),
-                    &root,
-                );
-                unsafe {
-                    ShowWindow(h, SW_SHOWMAXIMIZED);
-                    SetForegroundWindow(h);
-                }
-                nudges += 1;
+
+        // A window that stops answering for 30 s is the classic black-window
+        // symptom: report it once, with a pointer to the logs.
+        let mut resp: usize = 0;
+        let alive = unsafe {
+            SendMessageTimeoutW(h, WM_NULL, 0, 0, SMTO_ABORTIFHUNG, 1500, &mut resp) != 0
+        };
+        // a hung (black) window is not just slow: once it does not answer for
+        // 30 s it never will, so lift the modal box off it after a grace period
+        if !alive && !reported_hung && hung_ticks >= 15 {
+            unsafe {
+                ShowWindow(h, SW_HIDE);
             }
         }
+        hung_ticks = if alive { 0 } else { hung_ticks + 1 };
+        // ~30 s without answering = the black, non-responding window the user saw.
+        if hung_ticks >= 15 && !reported_hung {
+            reported_hung = true;
+            log_line("engine window is not responding (hung) - showing error", &root);
+            alert_box(
+                "پنجرهٔ بازی پاسخ نمی‌دهد (قفل شده).\n\n                 این معمولاً یعنی بازی به سرورش وصل نشده یا کارت گرافیک صحنه را نکشیده.\n                 فایل‌های fruitcraft.log و fruitcraft-engine.log کنار Fruitcraft.exe را بفرست.\n\n                 Internet را بررسی کن و دوباره شروع کن.",
+                "Fruitcraft - پنجرهٔ قفل‌شده",
+                MB_ICONWARNING,
+            );
+        }
+
+        // Landscape check: a portrait window means the engine ignored the
+        // orientation in build.settings; fix it once and log it.
+        if nudges < 4 {
+            let mut r: RECT = unsafe { mem::zeroed() };
+            if unsafe { GetWindowRect(h, &mut r) } != 0 {
+                let w = r.right - r.left;
+                let ht = r.bottom - r.top;
+                if w > 0 && ht > w {
+                    log_line(
+                        &format!("engine window {}x{} is portrait - resizing", w, ht),
+                        &root,
+                    );
+                    let mut wa: RECT = unsafe { mem::zeroed() };
+                    unsafe {
+                        SystemParametersInfoW(SPI_GETWORKAREA, 0, &mut wa as *mut RECT as *mut c_void, 0);
+                        SetWindowPos(
+                            h,
+                            std::ptr::null_mut(),
+                            wa.left,
+                            wa.top,
+                            wa.right - wa.left,
+                            wa.bottom - wa.top,
+                            SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
+                        );
+                    }
+                    nudges += 1;
+                }
+            }
+        }
+
+        // Title: Solar2D names its window "Corona Shell"; show the game name.
         let title_w = wide("Fruitcraft");
         unsafe {
             SendMessageW(h, WM_SETTEXT, 0, title_w.as_ptr() as LPARAM);
@@ -3102,4 +3446,7 @@ fn main() {
         unsafe { DestroyWindow(hwnd) };
         HWIN.store(0, Ordering::SeqCst);
     }
+
+    log_line("session ended - back to the profile picker", &root);
+    } // end of session loop
 }

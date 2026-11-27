@@ -52,6 +52,26 @@ COL_BTN_CREATE = (52, 122, 190)
 COL_BTN_QUIT = (190, 74, 62)
 
 
+
+# ------------------------- server precheck -------------------------
+# The game is an online client: it loads the player from iran.fruitcraft.ir and
+# never leaves the loading scene when that host is unreachable, which looks
+# exactly like a frozen dark window. Say so instead.
+def server_reachable(host="iran.fruitcraft.ir", port=443, timeout=8.0):
+    import socket
+    import ssl
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        ctx.wrap_socket(socket.create_connection((host, port), timeout=timeout),
+                        server_hostname=host).close()
+        return True
+    except Exception as exc:
+        log("network precheck %s:%d failed: %s" % (host, port, exc))
+        return False
+
+
 def log(msg):
     line = "[%d] %s" % (int(time.time()), msg)
     try:
@@ -312,6 +332,13 @@ class Launcher(tk.Tk):
         remember_profile(self.selected)
         if not os.path.exists(MAIN_LUA):
             self._fatal("game/data/main.lua is missing - extract the whole folder.")
+            return
+        if not server_reachable():
+            self._fatal(
+                "بازی به سرور اصلی خودش وصل نمی‌شود.\n\n"
+                "بدون اتصال به iran.fruitcraft.ir بازی داخل صفحهٔ بارگذاری می‌ماند "
+                "(همان پنجرهٔ سیاه).\n\n"
+                "اینترنت (و اگر روشن است، فیلترشکن) را بررسی کن و دوباره شروع کن.")
             return
         wine = wine_cmd()
         if not wine:

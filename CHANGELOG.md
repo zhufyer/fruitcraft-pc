@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.1.12 - the black window explained and handled
+
+**Root cause of the frozen black window.** The game is an online client: on
+start it fetches the player from `https://iran.fruitcraft.ir/player/load`. When
+that host cannot be reached, the loading scene never advances - the window
+turns black and Windows marks it "Not Responding". Nothing in the game assets
+can change that; what the launcher can do is explain it.
+
+* Windows launcher: before starting the engine it performs a real TCP + TLS
+  liveness probe against `iran.fruitcraft.ir:443` and, when the server does not
+  answer, shows a Persian message ("check the connection / turn the VPN off")
+  instead of launching a window that is doomed to hang.
+* `data/main.lua`: watches `network.request` for `player/load`; after three
+  failures it raises a Persian alert (covers a connection that drops mid-run).
+* Windows launcher: the name row is fixed - the edit box stays inside the
+  window (`EDIT_W=330`, right aligned) and the "نام:" label sits to its right.
+* Launcher alerts use Tahoma with Persian right-to-left text and a Persian
+  "باشه" button.
+* Engine crash or hung window -> Persian message plus the location of
+  `fruitcraft.log` / `fruitcraft-engine.log`, never a silent black window.
+* After a session ends the launcher returns to the profile picker.
+* Game window is placed with `SetWindowPos` on the desktop work area instead
+  of an aggressive maximise.
+* The same server precheck landed in the Linux launcher (`fruitcraft.py`).
+
+
 Versioning: every bug fix ships as a new numbered release + zip asset.
 
 ## v0.1.11 — Linux build (tested end-to-end) + Windows window fix
