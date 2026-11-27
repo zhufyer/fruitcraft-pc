@@ -9,31 +9,42 @@ developers themselves ship on Windows.
 > © TOD Studio — see [NOTICE.md](NOTICE.md).
 > Runtime licence: [LICENSE-Solar2D.txt](LICENSE-Solar2D.txt).
 
-## ⬇ Download (latest: v0.1.12)
+## ⬇ Download (latest: v0.1.13)
 
 | Platform | File | What it is |
 |---|---|---|
-| **Windows 10/11 (64-bit)** | [fruitcraft-v0.1.12-windows.zip](https://github.com/zhufyer/fruitcraft-pc/releases/download/v0.1.12/fruitcraft-v0.1.12-windows.zip) | `Fruitcraft.exe` launcher + Solar2D 2026 runtime. Extract, double-click, play. |
-| **Linux** | [fruitcraft-v0.1.12-linux.zip](https://github.com/zhufyer/fruitcraft-pc/releases/download/v0.1.12/fruitcraft-v0.1.12-linux.zip) | Native launcher (Python + Tk), game runs through your system **Wine**. |
+| **Windows 10/11 (64-bit)** | [fruitcraft-v0.1.13-windows.zip](https://github.com/zhufyer/fruitcraft-pc/releases/download/v0.1.13/fruitcraft-v0.1.13-windows.zip) | `Fruitcraft.exe` launcher + Solar2D 2026 runtime. Extract, double-click, play. |
+| **Linux** | [fruitcraft-v0.1.13-linux.zip](https://github.com/zhufyer/fruitcraft-pc/releases/download/v0.1.13/fruitcraft-v0.1.13-linux.zip) | Native launcher (Python + Tk), game runs through your system **Wine**. |
 
 All releases: [Releases page](https://github.com/zhufyer/fruitcraft-pc/releases).
 
-## ⚠ This game is online-only
+## 🌍 Which server? — choose it in the launcher
 
-On start the game loads the player from **`https://iran.fruitcraft.ir/player/load`**.
-If that host is unreachable from your machine — no internet, or a VPN/proxy that
-routes traffic away from Iran — the loading scene never finishes and the window
-stays black and marked *Not Responding*. **That is the game's own behaviour, not
-a crash of the port.**
+The game has two hosts: **`iran.fruitcraft.ir`** and **`global.fruitcraft.co`**.
+Older builds guessed which one to use from the computer's **timezone**, which is
+why a laptop abroad (or behind a VPN) asked the Iranian host and then sat in the
+loading scene forever — the black, *Not Responding* window.
 
-Since v0.1.12 the launcher probes the server (TCP + TLS) before launching the
-engine and tells you in Persian when it cannot reach it, instead of opening a
-window that is doomed to hang. If the game window ever stays black, send these
-two files from the folder next to `Fruitcraft.exe`:
+Since **v0.1.13** you pick the server in the launcher itself, on the **سرور:**
+row at the bottom of the window:
+
+| Button | Sends | Use it when |
+|---|---|---|
+| **ایران** | `FRUITCRAFT_SERVER=mycountry` | you are in Iran, no VPN |
+| **خودکار** (default) | probes both hosts, prefers the global one | you do not want to think about it |
+| **جهانی** | `FRUITCRAFT_SERVER=global` | you are outside Iran or using a VPN |
+
+The choice is remembered (`%APPDATA%\Fruitcraft\server.txt`, Linux:
+`~/.config/fruitcraft/server.txt`) and handed to the game as an environment
+variable, so nothing has to be edited by hand. Some text of the game comes from
+the global server in English; that is expected.
+
+If the window ever stays black anyway, send these two files from the folder
+next to `Fruitcraft.exe`:
 
 | File | Written by |
 |---|---|
-| `fruitcraft.log` | the launcher (window placement, engine exit code, network probe) |
+| `fruitcraft.log` | the launcher (server choice, probes, engine pid, exit code) |
 | `fruitcraft-engine.log` | the game bootstrap (`player/load` results, runtime errors, stage watchdog) |
 
 ## Run — Windows
@@ -42,20 +53,21 @@ two files from the folder next to `Fruitcraft.exe`:
 2. Double-click `game/Fruitcraft.exe`.
 3. The launcher window opens, drawn with the game's own art:
    four profiles (RTL, profile 1 right-most), **شروع / ساخت پروفایل / خروج**,
-   and a name field. Press **شروع** (or Enter) and the game starts in landscape.
+   a name field, and the **سرور:** row (ایران / خودکار / جهانی).
+   Press **شروع** (or Enter) and the game starts in landscape.
 
 Per-profile data: `%APPDATA%\Fruitcraft\profiles\pN`. Logs next to the exe:
 `fruitcraft.log` (launcher) and `fruitcraft-engine.log` (game).
 
 ## Screenshots
 
-| Launcher (v0.1.12, Windows) | Server unreachable → Persian message |
+| Launcher v0.1.13, Windows — with the سرور: row | Linux launcher — same row |
 |---|---|
-| ![launcher](docs/shots/windows-launcher-v012.png) | ![precheck](docs/shots/windows-precheck-v012.png) |
+| ![launcher](docs/shots/windows-launcher-v013.png) | ![linux](docs/shots/linux-launcher-v013.png) |
 
-| In game, Persian, landscape |
+| In game (global server), Persian, landscape |
 |---|
-| ![game](docs/shots/windows-game-v011.png) |
+| ![game](docs/shots/windows-game-v013-story.png) |
 
 ## Run — Linux
 
@@ -66,7 +78,7 @@ chmod +x Fruitcraft && ./Fruitcraft
 ```
 
 The launcher looks and behaves exactly like the Windows one (same RTL layout,
-same in-game assets). The game itself runs on the bundled Solar2D 2026 runtime
+same in-game assets, same **سرور:** row). The game itself runs on the bundled Solar2D 2026 runtime
 through Wine; each profile gets its own Wine prefix under
 `~/.local/share/Fruitcraft/profiles/pN`. First run of a profile prepares the
 prefix (1–3 min, shown in the launcher), later runs are fast.

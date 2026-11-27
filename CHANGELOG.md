@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.1.13 - server switch inside the launcher (Iran / Auto / Global)
+
+**The bug behind the black window.** `data/config.lu` picked the game server
+from the computer's **timezone**: `+0330` meant the Iranian server, anything
+else the global one. A laptop abroad (or with a VPN on) therefore asked
+`iran.fruitcraft.ir` for its player, got nothing, and the game sat in the
+loading scene forever - the black, "Not Responding" window.
+
+**The fix: the server is now a launcher setting.**
+
+* New row at the bottom of the launcher window: «سرور:» with three buttons,
+  right to left ایران / خودکار / جهانی. The choice is written to
+  `%APPDATA%\Fruitcraft\server.txt` (0/1/2) and passed to the game as
+  `FRUITCRAFT_SERVER=mycountry|global`.
+* `data/main.lua` reads that variable and sets `_serverType` / `_isMyCountry`
+  itself, so the timezone no longer decides anything.
+* The old "iran.fruitcraft.ir must answer or refuse to start" gate is gone.
+  Auto (`خودکار`) probes both hosts and prefers the global one; an
+  inconclusive probe no longer blocks the launch.
+* The probe now runs on a worker thread with a hard timeout
+  (`probe_with_timeout`). A dead host can never freeze the launcher again -
+  the v0.1.12 probe could block forever inside Wine.
+* The environment block is passed to the engine with
+  `CREATE_UNICODE_ENVIRONMENT`. Without that flag Windows read our UTF-16
+  block as ANSI, so the child never saw `FRUITCRAFT_SERVER` and every launch
+  stayed on the Iranian server.
+* Linux launcher: the same «سرور:» row, same `FRUITCRAFT_SERVER` variable,
+  same preference file (`~/.config/fruitcraft/server.txt`).
+* Launcher version string is now `v0.1.13`.
+
+**Verified end to end** (clean zips extracted to an empty folder, two separate
+Wine prefixes): picker -> جهانی -> شروع -> `servers: iran=false global=true`,
+`game server = Some("global")`, engine starts, the deck-building scene of the
+game appears in Persian, landscape, no crash.
+
 ## v0.1.12 - the black window explained and handled
 
 **Root cause of the frozen black window.** The game is an online client: on
